@@ -1,0 +1,2415 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>M.A.X — Holographic Interface</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
+<!-- MediaPipe Hands: detección del esqueleto de la mano -->
+<script crossorigin="anonymous" src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1646424915/hands.js"></script>
+<script crossorigin="anonymous" src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils@0.3.1675466124/drawing_utils.js"></script>
+<!-- Firebase -->
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
+<style>
+  :root{
+    --c:#38e8ff;
+    --rgb:56,232,255;
+    --c2:#7af7ff;
+    --cd:rgba(var(--rgb),.18);
+    --cb:rgba(var(--rgb),.45);
+    --panel:rgba(8,28,40,.28);
+    --panel2:rgba(4,16,24,.42);
+    --txt:#d7f6ff;
+    --dim:#5d8a9c;
+    --ok:#39ffa0;
+    --warn:#ffcc44;
+    --err:#ff4d6d;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{height:100%;width:100%;overflow:hidden;background:#000}
+  body{font-family:Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;color:var(--txt);user-select:none;-webkit-user-select:none}
+
+  /* ============ CÁMARA ============ */
+  #cam{position:fixed;inset:0;width:100%;height:100%;object-fit:cover;z-index:0;
+    transform:scaleX(-1);background:linear-gradient(135deg,#0a1820,#02060a)}
+  #tint{position:fixed;inset:0;z-index:1;pointer-events:none;background:transparent}
+
+
+  /* ============ ESQUELETO DE MANOS (MediaPipe) ============ */
+  #hands-canvas{position:fixed;inset:0;width:100%;height:100%;z-index:4;pointer-events:none}
+  #hands-canvas.off{display:none}
+  /* cursor virtual controlado por el dedo índice (uno por mano) */
+  #vcursor,#vcursor2{position:fixed;left:0;top:0;width:34px;height:34px;z-index:200;pointer-events:none;
+    margin-left:-17px;margin-top:-17px;opacity:0;transition:opacity .25s, transform .08s}
+  #vcursor.show,#vcursor2.show{opacity:1}
+  #vcursor::before,#vcursor2::before{content:'';position:absolute;inset:0;border-radius:50%;
+    border:2px solid var(--c);box-shadow:0 0 14px var(--c), inset 0 0 8px var(--cd);
+    animation:bk 1.4s infinite}
+  #vcursor::after,#vcursor2::after{content:'';position:absolute;left:50%;top:50%;width:6px;height:6px;
+    transform:translate(-50%,-50%);background:var(--c);border-radius:50%;box-shadow:0 0 8px var(--c)}
+  #vcursor.pinching::before,#vcursor2.pinching::before{border-color:var(--ok);box-shadow:0 0 20px var(--ok), inset 0 0 10px rgba(57,255,160,.4);transform:scale(.8)}
+  #vcursor.pinching::after,#vcursor2.pinching::after{background:var(--ok);box-shadow:0 0 10px var(--ok)}
+  /* indicador de estado de manos */
+  #hand-status{position:fixed;top:78px;right:24px;z-index:16;font-family:Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-size:10px;color:var(--dim);letter-spacing:0px;pointer-events:none;opacity:0;transition:.3s}
+  #hand-status.show{opacity:1}
+  #hand-status .ok{color:var(--ok)}
+
+  /* ============ PANEL FLOTANTE (dentro del mundo) ============ */
+  .pnl{
+    position:absolute;z-index:12;
+    background:var(--panel);
+    border:1px solid var(--cb);
+    backdrop-filter:blur(10px) saturate(1.2);
+    -webkit-backdrop-filter:blur(10px) saturate(1.2);
+    box-shadow:0 0 24px rgba(var(--rgb),.12), inset 0 0 30px rgba(var(--rgb),.04);
+    clip-path:polygon(14px 0, 100% 0, 100% calc(100% - 14px), calc(100% - 14px) 100%, 0 100%, 0 14px);
+    transition:opacity .4s, transform .4s;
+  }
+  .pnl::before{content:'';position:absolute;inset:0;pointer-events:none;
+    background:linear-gradient(180deg, rgba(var(--rgb),.08), transparent 30%);}
+  .pnl-h{
+    padding:9px 16px 7px;
+    border-bottom:1px solid rgba(var(--rgb),.25);
+    background:rgba(var(--rgb),.06);
+    font-family:Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;font-weight:700;font-size:11px;letter-spacing:0px;
+    color:#fff;text-transform:uppercase;
+    display:flex;align-items:center;justify-content:space-between;gap:10px;
+    clip-path:polygon(0 0,100% 0,100% 100%,14px 100%,0 calc(100% - 4px));
+    cursor:grab;user-select:none;-webkit-user-select:none;
+  }
+  .pnl-h:active{cursor:grabbing}
+  .pnl.drag{transition:none;z-index:30}
+  .pnl.drag .pnl-h{cursor:grabbing}
+  .pnl-h .ld{display:flex;align-items:center;gap:8px}
+  .pnl-h .ld::before{content:'';width:6px;height:6px;background:var(--c);border-radius:50%;box-shadow:0 0 8px var(--c);animation:bk 1.4s infinite}
+  @keyframes bk{0%,100%{opacity:1}50%{opacity:.3}}
+  .pnl-b{padding:14px 16px}
+  .pnl-tag{font-family:Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;font-size:9px;color:var(--dim);letter-spacing:0px}
+
+  /* posiciones absolutas dentro del MUNDO (entorno limitado a la pantalla) */
+  #p-tl{top:100px;left:20px;width:200px}
+  #p-tr{top:100px;right:20px;width:200px}
+  #p-bl{bottom:120px;left:20px;width:200px}
+  #p-br{bottom:120px;right:20px;width:200px}
+
+  /* ============ MUNDO (entorno limitado a la pantalla) ============ */
+  #world{
+    position:fixed;left:0;top:0;width:100%;height:100%;
+    z-index:10;
+  }
+  /* el "vacío": capa que ocupa todo el fondo */
+  #void{position:absolute;inset:0;cursor:default}
+  /* rejilla tenue para dar sensación de espacio */
+
+  /* bordes del mundo: un marco brillante en el límite */
+  #void::after{content:'';position:absolute;inset:0;pointer-events:none;
+    border:2px solid rgba(var(--rgb),.18);
+    box-shadow:inset 0 0 200px rgba(var(--rgb),.06)}
+
+  /* ============ TOP BAR (dentro del mundo) ============ */
+  #top{position:absolute;top:20px;left:50%;transform:translateX(-50%);z-index:15;
+    display:flex;align-items:center;gap:18px;padding:8px 22px;
+    background:var(--panel2);border:1px solid var(--cb);backdrop-filter:blur(14px);
+    clip-path:polygon(14px 0,calc(100% - 14px) 0,100% 100%,0 100%)}
+  #brand{font-family:Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;font-weight:800;letter-spacing:0px;font-size:18px;
+    background:linear-gradient(180deg, var(--c2), var(--c));-webkit-background-clip:text;-webkit-text-fill-color:transparent;display:inline-block}
+  #brand .v{font-family:Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;font-weight:500;letter-spacing:1px;font-size:10px;color:var(--dim);-webkit-text-fill-color:var(--dim);display:inline;margin-left:6px;text-transform:uppercase}
+  #clock{font-family:Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;font-size:15px;color:#fff;letter-spacing:0px}
+  #date{font-family:Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;font-size:10px;color:var(--dim);letter-spacing:0px;text-align:right}
+
+  /* ============ CHAT (dentro del mundo) ============ */
+  #chat{position:absolute;bottom:20px;left:50%;transform:translateX(-50%);z-index:18;
+    width:460px;display:flex;align-items:center;gap:8px;padding:7px 8px 7px 18px;
+    background:var(--panel2);border:1px solid var(--cb);backdrop-filter:blur(14px);
+    clip-path:polygon(24px 0,100% 0,100% calc(100% - 24px),calc(100% - 24px) 100%,0 100%,0 24px);
+    box-shadow:0 0 24px rgba(var(--rgb),.15)}
+  #chat.hide{opacity:0;pointer-events:none}
+  #chat input{flex:1;background:transparent;border:none;outline:none;color:var(--txt);
+    font-family:Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;font-size:14px;letter-spacing:0px}
+  #chat input::placeholder{color:var(--dim)}
+  .cb{width:38px;height:38px;border-radius:50%;flex-shrink:0;cursor:pointer;display:flex;align-items:center;justify-content:center;
+    border:1px solid var(--cb);background:rgba(var(--rgb),.08);color:var(--c);transition:all .2s}
+  .cb:hover{background:rgba(var(--rgb),.22);box-shadow:0 0 12px var(--cd)}
+  .cb svg{width:18px;height:18px}
+  .cb.mic.live{background:var(--err);color:#fff;border-color:var(--err);box-shadow:0 0 18px var(--err);animation:bk 1s infinite}
+
+  /* ============ VENTANAS DE VISTAS (.win) ============ */
+  .win{
+    position:absolute;z-index:16;
+    background:var(--panel2);border:1px solid var(--cb);backdrop-filter:blur(14px);
+    box-shadow:0 0 30px rgba(var(--rgb),.15), inset 0 0 30px rgba(var(--rgb),.04);
+    clip-path:polygon(14px 0, 100% 0, 100% calc(100% - 14px), calc(100% - 14px) 100%, 0 100%, 0 14px);
+    display:flex;flex-direction:column;
+  }
+  .win.drag{transition:none;z-index:30}
+  .win-h{
+    padding:14px 20px;border-bottom:1px solid rgba(var(--rgb),.22);
+    background:rgba(var(--rgb),.06);
+    display:flex;align-items:center;justify-content:space-between;gap:14px;
+    font-family:Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;font-weight:700;letter-spacing:0px;font-size:13px;color:#fff;
+    cursor:grab;user-select:none;-webkit-user-select:none;
+    clip-path:polygon(0 0,100% 0,100% 100%,14px 100%,0 calc(100% - 4px));
+  }
+  .win-h:active{cursor:grabbing}
+  .win.drag .win-h{cursor:grabbing}
+  .win-h .x{cursor:pointer;color:var(--dim);font-size:18px;padding:4px 10px;border-radius:6px;transition:.2s;
+    border:1px solid var(--cb)}
+  .win-h .x:hover{color:var(--err);background:rgba(255,77,109,.12);border-color:var(--err)}
+  .win-b{padding:24px;overflow-y:auto;flex:1;max-width:900px}
+
+  .stitle{font-family:Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;font-weight:600;letter-spacing:0px;font-size:12px;color:#fff;margin-bottom:4px;text-transform:uppercase}
+  .ssub{font-size:12px;color:var(--dim);margin-bottom:20px}
+
+  /* botones / inputs */
+  .btn{font-family:Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;font-weight:600;font-size:12px;letter-spacing:0px;text-transform:uppercase;
+    padding:9px 18px;border-radius:6px;cursor:pointer;color:#fff;
+    background:linear-gradient(135deg,rgba(var(--rgb),.18),rgba(var(--rgb),.04));
+    border:1px solid var(--cb);transition:.2s;display:inline-flex;align-items:center;gap:7px}
+  .btn:hover{background:rgba(var(--rgb),.28);box-shadow:0 0 14px var(--cd);color:#fff}
+  .btn.d{border-color:rgba(255,77,109,.5);color:#ffb3c0;background:rgba(255,77,109,.1)}
+  .btn.d:hover{background:rgba(255,77,109,.25);box-shadow:0 0 14px rgba(255,77,109,.4)}
+  .btn.s{padding:6px 12px;font-size:11px}
+  .btn.g{background:transparent}
+
+  input[type=text],input[type=password],input[type=date],input[type=number],textarea,select{
+    width:100%;background:rgba(0,0,0,.35);border:1px solid var(--cb);border-radius:6px;
+    padding:9px 12px;color:var(--txt);font-family:Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;font-size:13px;outline:none;transition:.2s}
+  input:focus,textarea:focus,select:focus{border-color:var(--c);box-shadow:0 0 10px var(--cd)}
+  label{font-size:11px;letter-spacing:1px;color:var(--dim);text-transform:uppercase;display:block;margin-bottom:5px}
+  .row{display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap}
+  .fld{flex:1;min-width:140px}
+  .g2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  @media(max-width:720px){.g2{grid-template-columns:1fr}}
+
+  /* switch */
+  .sw{position:relative;width:44px;height:22px;flex-shrink:0}
+  .sw input{opacity:0;width:0;height:0}
+  .sl{position:absolute;inset:0;background:rgba(0,0,0,.5);border:1px solid var(--cb);border-radius:22px;cursor:pointer;transition:.3s}
+  .sl::before{content:'';position:absolute;height:14px;width:14px;left:3px;top:3px;background:var(--dim);border-radius:50%;transition:.3s}
+  .sw input:checked+.sl{background:rgba(var(--rgb),.3);border-color:var(--c)}
+  .sw input:checked+.sl::before{transform:translateX(22px);background:var(--c);box-shadow:0 0 8px var(--c)}
+  .srow{display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid rgba(var(--rgb),.1)}
+  .srow:last-child{border-bottom:none}
+  .srow .nm{font-size:14px;color:var(--txt)}
+  .srow .mt{font-size:11px;color:var(--dim)}
+  input[type=range]{-webkit-appearance:none;width:140px;height:3px;background:var(--cd);border-radius:3px;outline:none}
+  input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:14px;border-radius:50%;background:var(--c);box-shadow:0 0 8px var(--c);cursor:pointer}
+
+  /* datos */
+  #drop{border:2px dashed var(--cb);border-radius:10px;padding:32px;text-align:center;cursor:pointer;transition:.25s;background:rgba(var(--rgb),.02)}
+  #drop:hover,#drop.dg{border-color:var(--c);background:rgba(var(--rgb),.08);box-shadow:inset 0 0 24px var(--cd)}
+  #drop svg{width:38px;height:38px;color:var(--c);margin-bottom:8px;filter:drop-shadow(0 0 6px var(--c))}
+  .frow{display:flex;align-items:center;gap:12px;padding:10px;border-radius:6px;background:rgba(0,0,0,.25);border:1px solid rgba(var(--rgb),.1);margin-bottom:6px;transition:.2s}
+  .frow:hover{border-color:var(--c);box-shadow:0 0 8px var(--cd)}
+  .fico{width:30px;height:30px;border-radius:6px;display:flex;align-items:center;justify-content:center;background:rgba(var(--rgb),.12);color:var(--c);flex-shrink:0}
+  .fico svg{width:16px;height:16px}
+  .finf{flex:1;min-width:0}
+  .finf .fn{font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .finf .fm{font-size:10px;color:var(--dim)}
+  .fact{display:flex;gap:5px}
+  .empty{text-align:center;color:var(--dim);padding:24px;font-size:13px}
+  .ist{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid rgba(var(--rgb),.08);font-size:13px}
+  .ist .k{color:var(--dim)} .ist .v{color:#fff;font-weight:600}
+
+  /* control */
+  .cg{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px}
+  .cc{background:rgba(0,0,0,.25);border:1px solid var(--cb);border-radius:8px;padding:14px;text-align:center;cursor:pointer;transition:.25s}
+  .cc:hover{border-color:var(--c);transform:translateY(-2px);box-shadow:0 4px 16px rgba(var(--rgb),.15)}
+  .cc .ci{width:38px;height:38px;margin:0 auto 8px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:rgba(var(--rgb),.12);color:var(--c)}
+  .cc .ci svg{width:18px;height:18px}
+  .cc .ct{font-size:12px;font-weight:600;letter-spacing:1px;text-transform:uppercase}
+  .cc .cd{font-size:10px;color:var(--dim);margin-top:3px;min-height:12px}
+  .cc.on{border-color:var(--ok);background:rgba(57,255,160,.08)}
+  .cc.on .ci{background:rgba(57,255,160,.15);color:var(--ok)}
+
+  /* tareas */
+  .tk{display:flex;align-items:center;gap:12px;padding:10px;border-radius:6px;background:rgba(0,0,0,.25);border:1px solid rgba(var(--rgb),.1);margin-bottom:6px;border-left:3px solid var(--c)}
+  .tk.high{border-left-color:var(--err)}
+  .tk.med{border-left-color:var(--warn)}
+  .tk.done{opacity:.5;text-decoration:line-through}
+  .tk input[type=checkbox]{width:16px;height:16px;accent-color:var(--c);cursor:pointer;flex-shrink:0}
+  .tk .tb{flex:1;min-width:0}
+  .tk .tt{font-size:14px}
+  .tk .tm{font-size:10px;color:var(--dim)}
+
+  /* color swatches */
+  .csw{width:24px;height:24px;border-radius:50%;cursor:pointer;border:2px solid rgba(255,255,255,.2);transition:.2s;display:inline-block}
+  .csw:hover{transform:scale(1.15)}
+  .csw.sel{border-color:#fff;box-shadow:0 0 10px currentColor}
+
+  /* audio bars del panel */
+  .bars{display:flex;align-items:flex-end;gap:2px;height:32px}
+  .bars span{flex:1;background:linear-gradient(180deg,var(--c),var(--cd));border-radius:2px 2px 0 0;transition:height .08s}
+
+  /* toast */
+  #toast{position:fixed;bottom:96px;left:50%;transform:translateX(-50%) translateY(20px);z-index:100;
+    background:var(--panel2);border:1px solid var(--c);border-radius:6px;padding:10px 20px;color:#fff;font-size:13px;
+    backdrop-filter:blur(12px);box-shadow:0 0 20px var(--cd);opacity:0;visibility:hidden;transition:.35s}
+  #toast.show{opacity:1;visibility:visible;transform:translateX(-50%) translateY(0)}
+  #toast.err{border-color:var(--err);color:#ffb3c0;box-shadow:0 0 20px rgba(255,77,109,.4)}
+
+  /* perm gate */
+  #gate{position:fixed;inset:0;z-index:200;background:rgba(2,8,12,.95);backdrop-filter:blur(10px);
+    display:flex;align-items:center;justify-content:center;flex-direction:column;text-align:center;padding:30px}
+  .gate-radar{position:relative;display:grid;place-items:center;width:150px;height:150px;margin-bottom:20px}
+  .gate-radar .orb{width:150px;height:150px;box-shadow:0 0 25px rgba(var(--rgb),.15)}
+  .gate-radar .orb-slice{width:150px;height:150px}
+  .gate-radar .orb-text b{font-size:18px}
+  .gate-radar .orb-text small{font-size:8px}
+  #gate h1{font-family:Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;font-weight:800;letter-spacing:0px;font-size:28px;color:#fff;margin:18px 0 8px;text-shadow:none}
+  #gate p{color:var(--dim);max-width:420px;font-size:14px;line-height:1.6;margin-bottom:22px}
+  #gate .gs{font-size:12px;color:#fff;min-height:18px;margin-top:12px;letter-spacing:0px;font-family:Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif}
+  #gate.hide{display:none}
+
+  /* responsive: ocultar paneles laterales en móvil */
+  @media(max-width:760px){
+    #top{padding:6px 14px;gap:10px}
+    #brand{font-size:12px;letter-spacing:4px}
+  }
+
+  /* marcador "tú" — dónde estás en el mundo (orientación) */
+  #you{position:fixed;left:50%;top:50%;width:90px;height:90px;z-index:9;pointer-events:none;
+    margin-left:-45px;margin-top:-45px;opacity:.0;transition:opacity .4s}
+  #you.show{opacity:.35}
+  #you::before{content:'';position:absolute;inset:0;border-radius:50%;
+    border:1px solid var(--c);animation:bk 2s infinite}
+  #you::after{content:'';position:absolute;left:50%;top:50%;width:8px;height:8px;
+    transform:translate(-50%,-50%);background:var(--c);border-radius:50%;box-shadow:0 0 12px var(--c)}
+
+  /* FUENTE INTER GLOBAL */
+  *, *::before, *::after {
+    font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif !important;
+    letter-spacing: normal !important;
+  }
+
+  /* NÚCLEO RADAR CENTRAL */
+  .orb-wrap {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    display: grid;
+    place-items: center;
+    height: clamp(200px, 30vh, 270px);
+    z-index: 5;
+    pointer-events: none;
+  }
+
+  .orb {
+    position: relative;
+    width: clamp(190px, 27vh, 244px);
+    height: clamp(190px, 27vh, 244px);
+    display: grid;
+    place-items: center;
+    border-radius: 50%;
+    background:
+      radial-gradient(circle at 50% 50%, rgba(245, 253, 255, .12) 0 31%, transparent 32%),
+      conic-gradient(from 20deg, rgba(107, 239, 255, .08), var(--c), rgba(107, 239, 255, .08), var(--c));
+    box-shadow:
+      0 0 28px rgba(var(--rgb), .48),
+      inset 0 0 22px rgba(var(--rgb), .32);
+    animation: spin 10s linear infinite;
+  }
+
+  .orb-slice {
+    position: absolute;
+    width: clamp(190px, 27vh, 244px);
+    height: clamp(190px, 27vh, 244px);
+    border-radius: 50%;
+    background: conic-gradient(from 112deg, rgba(var(--rgb), .86) 0 64deg, transparent 65deg 360deg);
+    opacity: .9;
+    filter: drop-shadow(0 0 18px rgba(var(--rgb), .65));
+    animation: spin 5.5s linear infinite reverse;
+  }
+
+  .orb::before,
+  .orb::after {
+    content: "";
+    position: absolute;
+    inset: 7px;
+    border-radius: inherit;
+    border: 1px solid rgba(var(--rgb), .72);
+  }
+
+  .orb::after {
+    inset: 17px;
+    border-color: rgba(var(--rgb), .35);
+    box-shadow: inset 0 0 20px rgba(var(--rgb), .26);
+  }
+
+  .orb-text {
+    position: absolute;
+    text-align: center;
+    line-height: 1.2;
+    text-shadow: 0 0 14px rgba(0,0,0,.8);
+  }
+
+  .orb-text small {
+    display: block;
+    font-size: clamp(9px, 1.2vw, 10px);
+    color: rgba(191, 250, 255, .75);
+    letter-spacing: .04em;
+    text-transform: uppercase;
+  }
+
+  .orb-text b {
+    display: block;
+    margin-top: 5px;
+    font-size: clamp(28px, 3.8vw, 36px);
+    font-weight: 650;
+    color: #fff;
+  }
+
+  .orb-text span {
+    display: block;
+    margin-top: 3px;
+    font-size: clamp(11px, 1.4vw, 13px);
+    color: rgba(235, 253, 255, .8);
+  }
+
+  @keyframes spin {
+    to { transform: rotate(360deg); }
+  }
+</style>
+</head>
+<body>
+
+<video id="cam" autoplay playsinline muted></video>
+<canvas id="hands-canvas"></canvas>
+<div id="vcursor" data-h="0"></div>
+<div id="vcursor2" data-h="1"></div>
+<div id="hand-status"></div>
+<div id="tint"></div>
+
+
+<!-- PUERTA DE PERMISOS -->
+<div id="gate">
+  <div class="gate-radar">
+    <div class="orb-slice"></div>
+    <div class="orb"></div>
+    <div class="orb-text">
+      <b>Max</b>
+    </div>
+  </div>
+  <p>Interfaz holográfica. Iniciando escaneo y verificando permisos de cámara, micrófono y ubicación...</p>
+  <div class="gs" id="gs" style="margin-top:15px;min-height:20px"></div>
+</div>
+
+<!-- ============ MUNDO (entorno pannable gigante) ============ -->
+<div id="world">
+  <div id="void"></div>
+
+  <!-- NÚCLEO RADAR CENTRAL -->
+  <div class="orb-wrap" id="radar-center">
+    <div class="orb-slice"></div>
+    <div class="orb"></div>
+    <div class="orb-text">
+      <b>Max</b>
+      <span id="radar-status">Escuchando<br>diga Max</span>
+    </div>
+  </div>
+
+  <!-- TOP BAR -->
+  <div id="top">
+    <div id="brand">Max <span class="v">Online</span></div>
+    <span id="bridge-dot" title="Verificando bridge..." style="width:7px;height:7px;border-radius:50%;background:#555;display:inline-block;margin-left:8px;margin-top:2px;flex-shrink:0;cursor:default;transition:background .4s"></span>
+    <div style="width:1px;height:24px;background:var(--cb)"></div>
+    <div>
+      <div id="clock">--:--:--</div>
+      <div id="date">—</div>
+    </div>
+    <div style="width:1px;height:24px;background:var(--cb)"></div>
+    <button id="btn-remote" onclick="openView('remote')" style="background:transparent;border:1px solid var(--cb);color:var(--c);font-size:10px;letter-spacing:2px;padding:4px 10px;border-radius:4px;cursor:pointer;font-family:inherit;transition:.2s" onmouseenter="this.style.background='var(--cd)'" onmouseleave="this.style.background='transparent'">MODO PC</button>
+  </div>
+
+  <!-- paneles repartidos por el espacio (coordenadas absolutas) -->
+  <div class="pnl" id="p-tl">
+    <div class="pnl-h"><span class="ld">SYS STATUS</span><span class="pnl-tag">[01]</span></div>
+    <div class="pnl-b" style="font-size:12px">
+      <div class="ist"><span class="k">CPU</span><span class="v" id="s-cpu">—</span></div>
+      <div class="ist"><span class="k">MEM</span><span class="v" id="s-mem">—</span></div>
+      <div class="ist"><span class="k">RED</span><span class="v" id="s-net">—</span></div>
+      <div class="ist"><span class="k">BATERÍA</span><span class="v" id="s-bat">—</span></div>
+    </div>
+  </div>
+
+  <div class="pnl" id="p-tr">
+    <div class="pnl-h"><span class="ld">AUDIO IN</span><span class="pnl-tag">[02]</span></div>
+    <div class="pnl-b">
+      <div class="bars" id="abars"></div>
+      <div style="margin-top:8px;display:flex;justify-content:space-between;font-size:10px;font-family:'Share Tech Mono';color:var(--dim)">
+        <span>FREQ</span><span id="a-lvl">0%</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="pnl" id="p-bl">
+    <div class="pnl-h"><span class="ld">MÓDULOS</span><span class="pnl-tag">[03]</span></div>
+    <div class="pnl-b" style="font-size:12px">
+      <div class="ist"><span class="k">ARCHIVOS</span><span class="v" id="s-files">0</span></div>
+      <div class="ist"><span class="k">TAREAS</span><span class="v" id="s-tasks">0</span></div>
+      <div class="ist"><span class="k">SESIÓN</span><span class="v" id="s-sess">00:00</span></div>
+      <div class="ist"><span class="k">UBICACIÓN</span><span class="v" id="s-geo">—</span></div>
+    </div>
+  </div>
+
+  <div class="pnl" id="p-br">
+    <div class="pnl-h"><span class="ld">LOG</span><span class="pnl-tag">[04]</span></div>
+    <div class="pnl-b" style="font-size:11px;font-family:'Share Tech Mono';max-height:120px;overflow:hidden" id="log-list"></div>
+  </div>
+
+  <!-- ============ CHAT ============ -->
+  <div id="chat">
+    <input type="text" id="ci" placeholder="Escribe a MAX o usa el micrófono…" autocomplete="off"/>
+    <button class="cb mic" id="mic" title="Hablar">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/><path d="M19 10v2a7 7 0 01-14 0v-2M12 19v4M8 23h8"/></svg>
+    </button>
+    <button class="cb" id="send" title="Enviar">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/></svg>
+    </button>
+  </div>
+
+  <!-- ============ VENTANAS DE VISTAS (Datos/Control/Plan/Config) ============ -->
+  <div id="wins"></div>
+</div>
+
+<!-- marcador "tú" en el mundo (orientación) -->
+<div id="you"></div>
+
+<div id="toast"></div>
+
+<script>
+const $=s=>document.querySelector(s), $$=s=>document.querySelectorAll(s);
+const toast=(m,e=false)=>{const t=$('#toast');t.textContent=m;t.classList.toggle('err',e);t.classList.add('show');clearTimeout(t._t);t._t=setTimeout(()=>t.classList.remove('show'),2600)};
+const fb=b=>{if(!b)return'0 B';const k=1024,u=['B','KB','MB','GB','TB'];const i=Math.floor(Math.log(b)/Math.log(k));return(b/Math.pow(k,i)).toFixed(i?1:0)+' '+u[i]};
+
+/* ============ LOG ============ */
+const logList=$('#log-list');
+function log(msg){
+  const t=new Date().toLocaleTimeString('es-ES');
+  const d=document.createElement('div');
+  d.innerHTML=`<span style="color:var(--dim)">${t}</span> <span style="color:#fff">${msg}</span>`;
+  logList.prepend(d);
+  while(logList.children.length>6) logList.removeChild(logList.lastChild);
+}
+
+/* ============ CFG ============ */
+const DEF={scan:true,mirror:true,c:'#38e8ff',sens:1.7,tts:false,voice:'',hands:true,
+  's-name':'', 's-bday':'', 's-occ':'', 's-address':'', 's-bio':'',
+  's-groq':'', 's-gemini':'', 's-eleven-key':'', 's-eleven-voice':''};
+let CFG={...DEF,...(JSON.parse(localStorage.getItem('max_cfg')||'{}'))};
+const saveCfg=()=>localStorage.setItem('max_cfg',JSON.stringify(CFG));
+function applyCfg(){
+  const hex=CFG.c.replace('#','');
+  const r=parseInt(hex.substr(0,2),16),
+        g=parseInt(hex.substr(2,2),16),
+        b=parseInt(hex.substr(4,2),16);
+  const rgb=r+','+g+','+b;
+  // color principal + componentes RGB (para rgba(var(--rgb),...) en toda la UI)
+  document.documentElement.style.setProperty('--c',CFG.c);
+  document.documentElement.style.setProperty('--rgb',rgb);
+  // variante clara (50% blanco) y oscuras para texto/glow
+  const mix=(p)=>Math.round(r+(255-r)*p)+','+Math.round(g+(255-g)*p)+','+Math.round(b+(255-b)*p);
+  document.documentElement.style.setProperty('--c2','rgb('+mix(.5)+')');
+  document.documentElement.style.setProperty('--c2-rgb',mix(.5));
+  // sombra/borde derivados del acento
+  document.documentElement.style.setProperty('--cd','rgba('+rgb+',.18)');
+  document.documentElement.style.setProperty('--cb','rgba('+rgb+',.45)');
+
+  $('#cam').style.transform=CFG.mirror?'scaleX(-1)':'none';
+  // actualizar swatches
+  $$('.csw').forEach(s=>s.classList.toggle('sel',s.dataset.c===CFG.c));
+  // sincronizar canvas de manos con la config
+  hCanvas.classList.toggle('off',!CFG.hands);
+}
+
+/* ============ MUNDO ============ */
+const WORLD={x:0,y:0};
+const worldEl=$('#world');
+function applyWorld(){
+  worldEl.style.transform='none';
+}
+function screenToWorld(sx,sy){return {x:sx, y:sy};}
+
+function clampOpenWindows(){
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  for(const v in openWins){
+    const win = openWins[v];
+    const w = parseFloat(win.style.width) || win.offsetWidth;
+    const h = parseFloat(win.style.height) || win.offsetHeight;
+    
+    const newW = Math.min(w, vw - 40);
+    const newH = Math.min(h, vh - 120);
+    win.style.width = newW + 'px';
+    win.style.height = newH + 'px';
+    
+    let left = parseFloat(win.style.left) || win.offsetLeft;
+    let top = parseFloat(win.style.top) || win.offsetTop;
+    
+    left = Math.max(10, Math.min(left, vw - newW - 10));
+    top = Math.max(10, Math.min(top, vh - newH - 10));
+    
+    win.style.left = left + 'px';
+    win.style.top = top + 'px';
+  }
+  
+  $$('.pnl').forEach(panel => {
+    const w = panel.offsetWidth;
+    const h = panel.offsetHeight;
+    let left = panel.offsetLeft;
+    let top = panel.offsetTop;
+    
+    left = Math.max(10, Math.min(left, vw - w - 10));
+    top = Math.max(10, Math.min(top, vh - h - 10));
+    
+    panel.style.left = left + 'px';
+    panel.style.top = top + 'px';
+    panel.style.right = 'auto';
+    panel.style.bottom = 'auto';
+  });
+}
+
+applyWorld();
+window.addEventListener('resize', () => {
+  clampOpenWindows();
+});
+
+/* ============ VENTANAS DE VISTAS (.win) en el mundo ============ */
+const VIEWS={
+  db:         {title:'BASE DE DATOS',           html:dbHTML,     bind:bindDB,     x:880,  y:140, w:860, h:560},
+  control:    {title:'CONTROL DE PC',           html:ctrlHTML,   bind:bindCtrl,   x:1900, y:140, w:860, h:620},
+  plan:       {title:'PLANIFICACIÓN',           html:planHTML,   bind:bindPlan,   x:880,  y:760, w:860, h:640},
+  config:     {title:'CONFIGURACIÓN',           html:cfgHTML,    bind:bindCfg,    x:1900, y:820, w:860, h:640},
+  app_stream: {title:'TRANSMISOR DE APLICACIÓN',html:streamHTML, bind:bindStream, x:880,  y:140, w:860, h:640},
+  remote:     {title:'MODO PC REMOTO',          html:remoteHTML, bind:bindRemote, x:200,  y:100, w:1100,h:720},
+};
+const openWins={};   // v -> elemento .win
+
+function openIframeView(title, url) {
+  const key = 'iframe_' + Date.now();
+  VIEWS[key] = {
+    title: title.toUpperCase(),
+    html: () => `
+      <div style="width:100%;height:100%;display:flex;flex-direction:column">
+        <div style="font-size:11px;color:var(--dim);margin-bottom:8px;display:flex;justify-content:space-between">
+          <span>URL: ${url}</span>
+          <span style="color:#ffb3c0">Nota: Ciertas páginas comerciales pueden bloquear su visualización por seguridad.</span>
+        </div>
+        <iframe src="${url}" style="width:100%;flex:1;border:1px solid var(--cb);border-radius:6px;background:#fff" sandbox="allow-same-origin allow-scripts allow-popups allow-forms"></iframe>
+      </div>
+    `,
+    bind: () => {},
+    x: 300, y: 200, w: 800, h: 550
+  };
+  openView(key);
+}
+
+function streamHTML(){
+  return `<div class="stitle">TRANSMISOR DE ESCRITORIO</div><div class="ssub">Transmite e interactúa con tus aplicaciones físicas en tiempo real</div>
+  <div style="display:flex;flex-direction:column;height:calc(100% - 45px);gap:10px">
+    <div style="display:flex;gap:10px;align-items:center;background:rgba(0,0,0,.2);padding:10px;border-radius:6px;border:1px solid var(--cb)">
+      <button class="btn s g" id="stream-start">Iniciar Transmisión</button>
+      <span style="font-size:11px;color:var(--dim)" id="stream-status">Escribe el nombre de la app y presiona Iniciar</span>
+      <input type="text" id="stream-app-title" placeholder="Título de la ventana (ej: Discord)" style="width:240px;margin-left:auto" value="Discord"/>
+    </div>
+    <div style="flex:1;position:relative;background:#000;border:1px solid var(--cb);border-radius:6px;overflow:hidden;display:flex;align-items:center;justify-content:center">
+      <img id="stream-image" style="max-width:100%;max-height:100%;object-fit:contain;cursor:crosshair" />
+    </div>
+  </div>`;
+}
+
+function bindStream(){
+  let isStreaming = false;
+  
+  $('#stream-start').onclick = () => {
+    const status = $('#stream-status');
+    const btn = $('#stream-start');
+    
+    if (isStreaming) {
+      isStreaming = false;
+      btn.textContent = 'Iniciar Transmisión';
+      btn.className = 'btn s g';
+      status.textContent = 'Transmisión detenida';
+      log('Transmisión finalizada');
+      $('#stream-image').src = '';
+    } else {
+      isStreaming = true;
+      btn.textContent = 'Detener Transmisión';
+      btn.className = 'btn s d';
+      status.textContent = 'Transmitiendo en vivo desde el Bridge';
+      log('Transmisión de fondo iniciada');
+      
+      const img = $('#stream-image');
+      
+      function nextFrame() {
+        if (!isStreaming) return;
+        const currentApp = $('#stream-app-title').value.trim();
+        
+        // Carga en segundo plano off-screen para evitar parpadeos blancos
+        const tempImg = new Image();
+        tempImg.onload = () => {
+          if (img) img.src = tempImg.src;
+          setTimeout(nextFrame, 80); // ~12 FPS
+        };
+        tempImg.onerror = () => {
+          setTimeout(nextFrame, 400); // Reintento más lento ante fallos de conexión
+        };
+        tempImg.src = `http://localhost:8080/api/window/screenshot?app=${encodeURIComponent(currentApp)}&t=${Date.now()}`;
+      }
+      nextFrame();
+    }
+  };
+
+  const img = $('#stream-image');
+  img.setAttribute('tabindex', '0');
+  img.style.outline = 'none';
+  
+  img.addEventListener('focus', () => {
+    img.style.boxShadow = '0 0 10px rgba(var(--rgb), 0.5)';
+    $('#stream-status').textContent = 'Teclado activo: escribe para enviar letras a la app';
+  });
+  img.addEventListener('blur', () => {
+    img.style.boxShadow = 'none';
+    $('#stream-status').textContent = 'Haz clic en la imagen para reactivar teclado';
+  });
+
+  img.onclick = async (e) => {
+    if (!isStreaming) return;
+    
+    img.focus();
+    
+    const rect = img.getBoundingClientRect();
+    const naturalWidth = img.naturalWidth;
+    const naturalHeight = img.naturalHeight;
+    if (!naturalWidth || !naturalHeight) return;
+    
+    const containerWidth = rect.width;
+    const containerHeight = rect.height;
+    
+    const ratio = Math.min(containerWidth / naturalWidth, containerHeight / naturalHeight);
+    const actualWidth = naturalWidth * ratio;
+    const actualHeight = naturalHeight * ratio;
+    
+    const marginX = (containerWidth - actualWidth) / 2;
+    const marginY = (containerHeight - actualHeight) / 2;
+    
+    const clickX = e.clientX - rect.left - marginX;
+    const clickY = e.clientY - rect.top - marginY;
+    
+    if (clickX < 0 || clickX > actualWidth || clickY < 0 || clickY > actualHeight) return;
+    
+    const relX = clickX / actualWidth;
+    const relY = clickY / actualHeight;
+    const appTitle = $('#stream-app-title').value.trim();
+    
+    try {
+      const res = await fetch('http://localhost:8080/api/control/input', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'click',
+          x_rel: relX,
+          y_rel: relY,
+          app_title: appTitle
+        })
+      });
+      if (res.ok) {
+        log('Acción de clic transmitida a: ' + appTitle);
+      } else {
+        const d = await res.json();
+        toast(d.error || 'Error al enviar acción', true);
+      }
+    } catch (err) {
+      console.warn('Bridge no disponible para control de entrada:', err);
+    }
+  };
+
+  img.onkeydown = async (e) => {
+    if (!isStreaming) return;
+    
+    if (e.key.length === 1 || ['Enter', 'Backspace', 'Tab', 'Space', 'ArrowLeft', 'ArrowUp', 'ArrowRight', 'ArrowDown', 'Escape'].includes(e.key)) {
+      e.preventDefault();
+    }
+    
+    const appTitle = $('#stream-app-title').value.trim();
+    try {
+      await fetch('http://localhost:8080/api/control/input', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'keypress',
+          key: e.key,
+          app_title: appTitle
+        })
+      });
+    } catch (err) {
+      console.warn('Error al transmitir tecla:', err);
+    }
+  };
+}
+
+function openView(v){
+  const cfg=VIEWS[v];
+  if(!cfg) return;
+  // si ya está abierta, la traemos al frente
+  if(openWins[v]){ focusWin(openWins[v]); return; }
+  const win=document.createElement('div');
+  win.className='win';
+  
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  const w = Math.min(cfg.w, vw - 40);
+  const h = Math.min(cfg.h, vh - 120);
+  
+  // Calcular posición en cascada para evitar superposición perfecta
+  const order = ['db','control','plan','config'].indexOf(v);
+  const cascadeOffset = order >= 0 ? order * 30 : 0;
+  let x = 80 + cascadeOffset;
+  let y = 120 + cascadeOffset;
+  
+  // Limitar a los bordes de la pantalla
+  x = Math.max(20, Math.min(x, vw - w - 20));
+  y = Math.max(20, Math.min(y, vh - h - 20));
+
+  win.style.left=x+'px';
+  win.style.top=y+'px';
+  win.style.width=w+'px';
+  win.style.height=h+'px';
+  win.dataset.v=v;
+  win.innerHTML='<div class="win-h"><span>'+cfg.title+'</span><span class="x">✕</span></div><div class="win-b"></div>';
+  $('#wins').appendChild(win);
+  const body=win.querySelector('.win-b');
+  body.innerHTML=cfg.html();
+  cfg.bind();
+  if(v==='control') loadSys();
+  if(v==='plan') renderTasks();
+  // botón cerrar
+  win.querySelector('.x').addEventListener('click',e=>{e.stopPropagation();closeWin(v)});
+  // arrastrar por la cabecera (ratón/táctil)
+  makeDraggable(win, win.querySelector('.win-h'));
+  openWins[v]=win;
+  log('Abierto: '+cfg.title);
+  return win;
+}
+function closeWin(v){
+  const win=openWins[v];
+  if(!win) return;
+  win.remove();
+  delete openWins[v];
+}
+function focusWin(win){
+  $('#wins').appendChild(win);   // re-append -> al frente
+}
+// exponer para posibles llamadas (chat, etc.)
+window.openView=openView;
+
+/* ============ RELOJ + SESIÓN ============ */
+const sessStart=Date.now();
+setInterval(()=>{
+  const d=new Date();
+  $('#clock').textContent=d.toLocaleTimeString('es-ES');
+  $('#date').textContent=d.toLocaleDateString('es-ES',{day:'2-digit',month:'short',year:'numeric'}).toUpperCase();
+  // sesión
+  const s=Math.floor((Date.now()-sessStart)/1000);
+  $('#s-sess').textContent=String(Math.floor(s/60)).padStart(2,'0')+':'+String(s%60).padStart(2,'0');
+  // red
+  $('#s-net').innerHTML=navigator.onLine?'<span style="color:var(--ok)">● ONLINE</span>':'<span style="color:var(--err)">● OFFLINE</span>';
+},1000);
+
+/* ============ CÁMARA ============ */
+let camStream=null;
+async function startCam(){
+  try{
+    camStream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'user',width:{ideal:1280},height:{ideal:720}},audio:false});
+    $('#cam').srcObject=camStream;
+    log('Cámara iniciada');
+    return true;
+  }catch(e){ log('Cámara denegada'); return false; }
+}
+
+/* ============ MIC + AUDIO ============ */
+let micStream=null,aCtx=null,an=null,fdata=null,micOn=false;
+// audio bars panel
+(function(){
+  const ab=$('#abars');
+  for(let i=0;i<24;i++){const s=document.createElement('span');s.style.height='4px';ab.appendChild(s)}
+})();
+
+async function startMic(){
+  try{
+    micStream=await navigator.mediaDevices.getUserMedia({audio:true});
+    aCtx=new (window.AudioContext||window.webkitAudioContext)();
+    const src=aCtx.createMediaStreamSource(micStream);
+    an=aCtx.createAnalyser();an.fftSize=128;an.smoothingTimeConstant=.75;
+    src.connect(an);fdata=new Uint8Array(an.frequencyBinCount);
+    micOn=true;log('Micrófono activado');return true;
+  }catch(e){log('Micrófono denegado');return false;}
+}
+
+const abarsSpans=()=>$('#abars').children;
+function animBars(){
+  requestAnimationFrame(animBars);
+  if(!micOn||!an)return;
+  an.getByteFrequencyData(fdata);
+  let s=0;const n=Math.min(32,fdata.length);
+  for(let i=2;i<n;i++)s+=fdata[i];
+  const lvl=s/(n*255);
+  const sp=abarsSpans();
+  for(let i=0;i<24;i++){
+    const v=fdata[i*2]/255;
+    sp[i].style.height=(4+v*28)+'px';
+  }
+  $('#a-lvl').textContent=Math.round(lvl*100)+'%';
+}
+
+/* ============ CHAT ============ */
+const ci=$('#ci');
+function addMsg(t,u=false){
+  const sender = u ? 'TÚ' : 'M.A.X';
+  const color = u ? '#38e8ff' : '#39ffa0';
+  console.log(`%c[${sender}]: %c${t}`, `color: ${color}; font-weight: bold; font-size: 12px;`, `color: #d7f6ff; font-size: 12px;`);
+}
+function reply(inp){
+  const q=inp.toLowerCase().trim();
+  
+  if (/^(silencio|cállate|callate|silence|silencia)$/i.test(q)) {
+    if ('speechSynthesis' in window) {
+      speechSynthesis.cancel();
+    }
+    return null;
+  }
+
+  // Interceptar la orden de incrustar aplicaciones en la interfaz
+  if (q.includes('dentro de tu interfaz') || q.includes('dentro de la interfaz') || q.includes('en tu interfaz') || q.includes('dentro de tu max') || q.includes('en tu max') || q.includes('dentro de max')) {
+    let target = q.replace(/abrir|abre|mostrar|muestra|pon|poner|lanza|lanzar|transmite|transmitir/gi, '')
+                  .replace(/dentro de tu interfaz|dentro de la interfaz|en tu interfaz|dentro de tu max|en tu max|dentro de max/gi, '')
+                  .trim();
+    if (target) {
+      const cleanTarget = target.toLowerCase();
+      // Si el operador menciona transmitir pantalla o aplicaciones locales
+      if (cleanTarget.includes('pantalla') || cleanTarget.includes('escritorio') || cleanTarget.includes('discord') || cleanTarget.includes('spotify') || cleanTarget.includes('steam') || cleanTarget.includes('bloc de notas') || cleanTarget.includes('notepad') || cleanTarget.includes('word') || cleanTarget.includes('excel')) {
+        setTimeout(() => {
+          openView('app_stream');
+          const inpVal = $('#stream-app-title');
+          if (inpVal) {
+            inpVal.value = target.charAt(0).toUpperCase() + target.slice(1);
+          }
+        }, 50);
+        return `Como ordene, señor. He abierto mi Transmisor de Aplicaciones para controlar ${target}. Presione el botón de transmisión y seleccione la ventana de la aplicación de escritorio correspondiente.`;
+      }
+
+      let url = target;
+      let title = target;
+      if (cleanTarget.includes('youtube')) {
+        url = 'https://www.youtube.com/embed/';
+        title = 'YouTube';
+      } else if (cleanTarget.includes('google')) {
+        url = 'https://www.google.com/search?q=Max&igu=1';
+        title = 'Google';
+      } else if (cleanTarget.includes('wikipedia')) {
+        url = 'https://es.wikipedia.org';
+        title = 'Wikipedia';
+      } else if (cleanTarget.includes('github')) {
+        url = 'https://github.com';
+        title = 'GitHub';
+      } else {
+        if (!target.startsWith('http://') && !target.startsWith('https://')) {
+          if (target.includes('.') && !target.includes(' ')) {
+            url = 'https://' + target;
+          } else {
+            url = `https://www.google.com/search?q=${encodeURIComponent(target)}&igu=1`;
+            title = `Búsqueda: ${target}`;
+          }
+        }
+      }
+      openIframeView(title, url);
+      return `Como ordene, señor. He creado un panel flotante para intentar cargar ${title} dentro de mi interfaz. Tenga en cuenta que si el servicio bloquea la incrustación, se mostrará una pantalla en blanco.`;
+    }
+  }
+  
+  // Definiciones de ventanas para control por conversación
+  const views = [
+    { key: 'db', name: 'Base de Datos', pattern: /base de datos|datos|almacenamiento|archivos|storage|database|db/i },
+    { key: 'control', name: 'Control de PC', pattern: /control|sistema|sensores|acciones|pc/i },
+    { key: 'plan', name: 'Planificación', pattern: /planificación|planificador|plan|objetivos|tareas|recordar|lista|pendientes/i },
+    { key: 'config', name: 'Configuración', pattern: /configuración|personalización|apariencia|ajustes|opciones|config/i }
+  ];
+
+  const closePattern = /cerrar|cierra|ocultar|oculta|quitar|quita|esconder|esconde|minimizar|minimiza/i;
+  const openPattern = /abrir|abre|mostrar|muestra|ver|enseñar|enseña|lanza|poner|pon|acceder|ir a|activar|activa/i;
+
+  let action = null;
+  if (closePattern.test(q)) {
+    action = 'close';
+  } else if (openPattern.test(q)) {
+    action = 'open';
+  }
+
+  // Controlar todas las ventanas a la vez
+  if (/todo|todas|las ventanas/i.test(q)) {
+    if (action === 'close') {
+      views.forEach(v => closeWin(v.key));
+      return 'Entendido, señor. He procedido a retirar todos los paneles de su pantalla de visualización.';
+    } else if (action === 'open' || q.includes('todo')) {
+      views.forEach(v => openView(v.key));
+      return 'Por supuesto, señor. He desplegado todas las interfaces y paneles de control en su entorno.';
+    }
+  }
+
+  // Controlar una ventana específica
+  let targetView = null;
+  for (const view of views) {
+    if (view.pattern.test(q)) {
+      targetView = view;
+      break;
+    }
+  }
+
+  if (targetView) {
+    if (!action) action = 'open'; // Si solo nombra la ventana, asumimos que desea abrirla
+    if (action === 'open') {
+      openView(targetView.key);
+      return `Comprendido, señor. He desplegado la ventana de ${targetView.name} en su terminal.`;
+    } else {
+      closeWin(targetView.key);
+      return `Como ordene, señor. He procedido a cerrar el módulo de ${targetView.name}.`;
+    }
+  }
+
+  // Saludos e integración del Clima
+  const isGreeting = /hola|buenas|hey|saludos|buenos días|buenas tardes|buenas noches/i.test(q);
+  const isWeatherQuery = /clima|tiempo|temperatura|viento|vientos|mar|nivel del mar|presión|altitud|elevación/i.test(q);
+
+  if (isGreeting || isWeatherQuery) {
+    const now = new Date();
+    const hrs = now.getHours();
+    let salutation = "Buenas noches, señor";
+    if (hrs >= 6 && hrs < 12) salutation = "Buenos días, señor";
+    else if (hrs >= 12 && hrs < 20) salutation = "Buenas tardes, señor";
+
+    if (weatherData) {
+      const desc = weatherCodeToText(weatherData.code);
+      const windDirStr = windDirectionToText(weatherData.windDir);
+      const tempStr = Math.round(weatherData.temp);
+      const windSpeedStr = Math.round(weatherData.windSpeed);
+      const pressureStr = Math.round(weatherData.pressureMsl);
+      const elevationStr = Math.round(weatherData.elevation);
+
+      return `${salutation}. En este momento registramos cielos con condiciones de ${desc}. La temperatura ambiente es de ${tempStr} grados centígrados, con una sensación térmica de ${Math.round(weatherData.apparent)} grados. Contamos con una humedad del ${weatherData.humidity} por ciento. Nos encontramos situados a una altitud de ${elevationStr} metros sobre el nivel del mar, con una presión atmosférica de ${pressureStr} hectopascales referida al nivel medio del mar. Se registra además un viento de ${windSpeedStr} kilómetros por hora procedente del ${windDirStr}. Espero que su jornada transcurra de manera productiva. ¿En qué puedo asistirle en esta ocasión?`;
+    } else {
+      return `${salutation}. Actualmente no dispongo de los datos climáticos en tiempo real debido a que no he podido obtener su localización exacta en la interfaz. Por favor, asegúrese de conceder los permisos de geolocalización a la aplicación. ¿Qué módulo desea que configure o inicie?`;
+    }
+  }
+
+  // Respuestas conversacionales básicas
+  if (/hora/.test(q)) {
+    return `La hora exacta en su ubicación actual es la(s) ${new Date().toLocaleTimeString('es-ES', {hour: '2-digit', minute: '2-digit'})}, señor.`;
+  }
+  if (/fecha|hoy/.test(q)) {
+    const options = { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' };
+    return `Hoy es ${new Date().toLocaleDateString('es-ES', options)}, señor.`;
+  }
+  if (/quién eres|quien eres|tu nombre/i.test(q)) {
+    return 'Soy M.A.X., su asistente de interfaz holográfica local. Mi propósito es asistirle en la supervisión de sistemas y objetivos, señor.';
+  }
+  if (/gracias/i.test(q)) {
+    return 'Es mi deber servirle, señor. No tiene nada que agradecer.';
+  }
+  if (/apagar|cerrar|adiós|adios/i.test(q)) {
+    return 'Entendido, señor. Iniciando protocolo de suspensión del sistema. Hasta pronto.';
+  }
+
+  // Todo lo demás va al bridge (Groq)
+  return null;
+}
+const SYSTEM_PROMPT = `Sos Max, un asistente personal de inteligencia artificial de alta tecnología, leal y extremadamente capacitado.
+Te comunicas de manera formal, respetuosa y elegante con el operador, refiriéndote a él como 'señor' en tus respuestas.
+Tu personalidad es impecable, analítica y servicial, al estilo de un mayordomo digital del futuro.
+Siempre respondes en formato JSON estructurado con las siguientes claves:
+{
+  "action": "nombre_de_la_accion",
+  "response": "Lo que dirás en voz alta",
+  "params": {}
+}`;
+
+async function buildSystemPrompt() {
+  const name = CFG['s-name'] ? CFG['s-name'].trim() : '';
+  const occ = { 'estudio':'estudia','trabajo':'trabaja','nada':'no trabaja ni estudia' }[CFG['s-occ']] || '';
+  const bday = CFG['s-bday'] || '';
+  const addr = CFG['s-address'] ? CFG['s-address'].trim() : '';
+  const bio  = CFG['s-bio'] ? CFG['s-bio'].trim() : '';
+
+  let ctx = SYSTEM_PROMPT;
+
+  // Fecha y hora local
+  const now = new Date();
+  const meses = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
+  const fechaStr = `${now.getDate()} de ${meses[now.getMonth()]} de ${now.getFullYear()}`;
+  const horaStr = `${now.getHours()}:${String(now.getMinutes()).padStart(2,'0')}`;
+  ctx += `\n\nFECHA Y HORA ACTUAL: ${fechaStr}, ${horaStr}.`;
+  ctx += `\nEsta fecha es la única válida. No asumas la estación del año.`;
+
+  // Clima
+  if (weatherData) {
+    const desc = weatherCodeToText(weatherData.code);
+    const windDirStr = windDirectionToText(weatherData.windDir);
+    const tempStr = Math.round(weatherData.temp);
+    const windSpeedStr = Math.round(weatherData.windSpeed);
+    const pressureStr = Math.round(weatherData.pressureMsl);
+    const elevationStr = Math.round(weatherData.elevation);
+
+    ctx += `\n\nClima actual: ${desc}. Temperatura: ${tempStr}°C (sensación térmica de ${Math.round(weatherData.apparent)}°C). Humedad: ${weatherData.humidity}%. `;
+    ctx += `Presión a nivel del mar: ${pressureStr} hPa. Elevación sobre el nivel del mar: ${elevationStr} metros. `;
+    ctx += `Viento: ${windSpeedStr} km/h con dirección ${windDirStr}.`;
+    ctx += `\nSi el operador pregunta por clima, temperatura o estación, respondé directamente con estos datos reales, sin rodeos.`;
+    ctx += `\n\nREGLA DE INICIO/SALUDOS: Si la conversación está iniciando o el primer mensaje del operador es un saludo (como "hola", "buenas noches", etc.), debes incluir SIEMPRE y de forma obligatoria en tu respuesta los detalles del clima actual, la velocidad y dirección del viento, y la presión a nivel del mar.`;
+  } else {
+    ctx += `\n\nUBICACIÓN Y CLIMA: No se pudo obtener la ubicación o el clima del operador actual.`;
+  }
+
+  let info = '\n\nCONTEXTO DEL OPERADOR:';
+  let added = false;
+  if(name){ info += `\n- Nombre: ${name}`; added=true; }
+  if(occ){ info += `\n- Actividad: ${occ}`; added=true; }
+  if(bday){
+    const d = new Date(bday);
+    if(!isNaN(d)) {
+      const age = Math.floor((Date.now() - d.getTime()) / (365.25*24*3600*1000));
+      info += `\n- Fecha de nacimiento: ${bday} (${age} años)`; added=true;
+    }
+  }
+  if(addr){ info += `\n- Dirección: ${addr}`; added=true; }
+  if(bio){ info += `\n- Notas personales del operador: ${bio}`; added=true; }
+  if(added) ctx += info;
+  
+  return ctx;
+}
+
+// Llamada directa a Groq desde el navegador usando la API key del config
+async function callGroqDirect(message, sysPrompt) {
+  const key = CFG['s-groq'] || '';
+  if (!key) throw new Error('no-key');
+  const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${key}` },
+    body: JSON.stringify({
+      model: 'llama-3.3-70b-versatile',
+      messages: [
+        { role: 'system', content: sysPrompt },
+        { role: 'user', content: message }
+      ],
+      temperature: 0.7,
+      max_tokens: 512
+    })
+  });
+  if (!res.ok) throw new Error(`groq-${res.status}`);
+  const data = await res.json();
+  const raw = data.choices?.[0]?.message?.content || '';
+  try { return JSON.parse(raw); } catch { return { action: 'chat', response: raw, params: {} }; }
+}
+
+// Ejecutar acción de sistema en el bridge (silencioso, no bloquea la respuesta)
+async function tryBridgeAction(action, message, params) {
+  if (action === 'chat') return; // nada que ejecutar
+  try {
+    await fetch('http://localhost:8080/api/command', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: AbortSignal.timeout(3000),
+      body: JSON.stringify({ message, groq_api_key: CFG['s-groq'] || '' })
+    });
+  } catch { /* bridge offline, ignorar silenciosamente */ }
+}
+
+// Estado del bridge para el indicador visual
+let bridgeOnline = null;
+async function checkBridgeStatus() {
+  try {
+    const r = await fetch('http://localhost:8080/api/status', { signal: AbortSignal.timeout(1200) });
+    bridgeOnline = r.ok;
+  } catch { bridgeOnline = false; }
+  const dot = $('#bridge-dot');
+  if (dot) {
+    dot.style.background = bridgeOnline ? 'var(--c)' : '#888';
+    dot.title = bridgeOnline ? 'Bridge online (acciones de sistema disponibles)' : 'Bridge offline (solo conversación)';
+  }
+}
+// Verificar estado del bridge al cargar (sin bloquear)
+setTimeout(checkBridgeStatus, 2000);
+
+async function send(){
+  const v = ci.value.trim();
+  if (!v) return;
+  addMsg(v, true);
+  ci.value = '';
+  log('Mensaje enviado');
+
+  // 1. Comandos locales de interfaz (silencio, abrir ventanas, etc.)
+  const localReply = reply(v);
+  if (localReply !== null) {
+    addMsg(localReply);
+    if (CFG.tts) speak(localReply);
+    return;
+  }
+
+  // 2. Siempre llamar a Groq directo desde el navegador
+  const sysPrompt = await buildSystemPrompt();
+  try {
+    const result = await callGroqDirect(v, sysPrompt);
+    const responseText = result.response || '';
+    addMsg(responseText);
+    if (CFG.tts) speak(responseText);
+    log('Respuesta de Groq recibida');
+
+    // 3. Si hay una acción de sistema, intentar ejecutarla en el bridge (opcional)
+    if (result.action && result.action !== 'chat') {
+      tryBridgeAction(result.action, v, result.params || {});
+    }
+  } catch(err) {
+    if (err.message === 'no-key') {
+      const msg = 'Señor, configure una API key de Groq en el panel de Configuración.';
+      addMsg(msg); if (CFG.tts) speak(msg);
+    } else {
+      const msg = `Error al contactar Groq: ${err.message}`;
+      addMsg(msg); if (CFG.tts) speak(msg);
+    }
+  }
+}
+$('#send').addEventListener('click',send);
+ci.addEventListener('keydown',e=>{if(e.key==='Enter')send()});
+
+/* mic push-to-talk */
+let rec=false,mr=null;
+$('#mic').addEventListener('click',async()=>{
+  if(!micStream){const ok=await startMic();if(!ok){toast('Sin acceso al micrófono',true);return}}
+  if(!rec){
+    rec=true;$('#mic').classList.add('live');
+    if($('#radar-status')) $('#radar-status').innerHTML = 'Escuchando...';
+    try{
+      mr=new MediaRecorder(micStream);
+      mr.onstop=()=>{
+        $('#mic').classList.remove('live');
+        if($('#radar-status')) $('#radar-status').innerHTML = 'Escuchando<br>diga Max';
+        rec=false;
+        setTimeout(()=>{addMsg('[ Entrada de voz captada ]',true);addMsg('Detecté tu voz. Para transcripción precisa usa el teclado. Conecta Web Speech API para voz-a-texto.');log('Voz captada')},500);
+      };
+      mr.start();setTimeout(()=>{if(mr&&mr.state!=='inactive')mr.stop()},4000);
+    }catch(e){
+      toast('Grabación no soportada',true);
+      $('#mic').classList.remove('live');
+      if($('#radar-status')) $('#radar-status').innerHTML = 'Escuchando<br>diga Max';
+      rec=false;
+    }
+  }
+});
+
+/* ============ TTS ============ */
+function loadVoices(){const vs=speechSynthesis.getVoices();const sel=$('#cfg-voice');if(!sel)return;sel.innerHTML='';vs.forEach(v=>{const o=document.createElement('option');o.value=v.name;o.textContent=v.name+' ('+v.lang+')';sel.appendChild(o)});if(CFG.voice)sel.value=CFG.voice}
+async function speak(t) {
+  const elevenKey = CFG['s-eleven-key'] ? CFG['s-eleven-key'].trim() : '';
+  const elevenVoice = CFG['s-eleven-voice'] ? CFG['s-eleven-voice'].trim() : '';
+
+  if (elevenKey && elevenVoice) {
+    try {
+      log('Sintetizando voz en ElevenLabs...');
+      const res = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${elevenVoice}`, {
+        method: 'POST',
+        headers: {
+          'xi-api-key': elevenKey,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          text: t,
+          model_id: 'eleven_multilingual_v2',
+          voice_settings: {
+            stability: 0.5,
+            similarity_boost: 0.75
+          }
+        })
+      });
+      if (!res.ok) {
+        throw new Error('ElevenLabs API respondió error ' + res.status);
+      }
+      const blob = await res.blob();
+      const audioUrl = URL.createObjectURL(blob);
+      const audio = new Audio(audioUrl);
+      
+      if (window.currentAudioElement) {
+        try { window.currentAudioElement.pause(); } catch(e){}
+      }
+      window.currentAudioElement = audio;
+
+      audio.onended = () => {
+        URL.revokeObjectURL(audioUrl);
+      };
+      audio.onerror = () => {
+        URL.revokeObjectURL(audioUrl);
+      };
+
+      await audio.play();
+      log('Audio de ElevenLabs reproducido');
+      return;
+    } catch (err) {
+      console.warn('ElevenLabs falló, usando Web Speech API como fallback:', err);
+      log('ElevenLabs falló. Usando voz del navegador.');
+    }
+  }
+
+  if (!('speechSynthesis' in window)) return;
+  speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(t);
+  const v = speechSynthesis.getVoices().find(x => x.name === CFG.voice);
+  if (v) u.voice = v;
+  u.rate = 1;
+  u.pitch = .9;
+  speechSynthesis.speak(u);
+}
+if('speechSynthesis'in window){speechSynthesis.onvoiceschanged=loadVoices;loadVoices()}
+
+/* ============ INDEXEDDB ============ */
+let DB;
+function openDB(){return new Promise((res,rej)=>{const rq=indexedDB.open('jrv_db',1);rq.onupgradeneeded=e=>{const d=e.target.result;if(!d.objectStoreNames.contains('files')){d.createObjectStore('files',{keyPath:'id',autoIncrement:true}).createIndex('name','name')}};rq.onsuccess=e=>{DB=e.target.result;res(DB)};rq.onerror=e=>rej(e)})}
+function dbAdd(f,note){return new Promise((res,rej)=>{const tx=DB.transaction('files','readwrite');const r=tx.objectStore('files').add({name:f.name,size:f.size,type:f.type||'desconocido',note:note||'',date:Date.now(),blob:f});r.onsuccess=()=>res();r.onerror=e=>rej(e)})}
+function dbAll(){return new Promise((res,rej)=>{const tx=DB.transaction('files','readonly');const rq=tx.objectStore('files').getAll();rq.onsuccess=()=>res(rq.result);rq.onerror=e=>rej(e)})}
+function dbDel(id){return new Promise((res,rej)=>{const tx=DB.transaction('files','readwrite');const r=tx.objectStore('files').delete(id);r.onsuccess=()=>res();r.onerror=e=>rej(e)})}
+function dbClear(){return new Promise((res,rej)=>{const tx=DB.transaction('files','readwrite');const r=tx.objectStore('files').clear();r.onsuccess=()=>res();r.onerror=e=>rej(e)})}
+
+function fIco(t){if(/^image\//.test(t))return'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>';if(/^video\//.test(t))return'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>';if(/^audio\//.test(t))return'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>';return'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><path d="M14 2v6h6"/></svg>'}
+
+/* ============ VISTA: DATOS ============ */
+function dbHTML(){
+  return `<div class="stitle">ALMACENAMIENTO LOCAL</div><div class="ssub">Los archivos se guardan permanentemente en este navegador (IndexedDB)</div>
+  <div class="g2">
+    <div style="border:1px solid var(--cb);border-radius:8px;padding:16px;background:rgba(0,0,0,.2)">
+      <div style="font-family:'Orbitron';font-size:11px;letter-spacing:2px;color:var(--c2);margin-bottom:12px">SUBIR ARCHIVO</div>
+      <div id="drop"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg><p style="font-size:13px">Arrastra o haz clic</p><small style="color:var(--dim);font-size:11px">Cualquier tipo · permanente</small></div>
+      <input type="file" id="fi" multiple style="display:none"/>
+      <div style="margin-top:10px"><label>Nota (opcional)</label><input type="text" id="fnote" placeholder="Ej: Informe Q1"/></div>
+    </div>
+    <div style="border:1px solid var(--cb);border-radius:8px;padding:16px;background:rgba(0,0,0,.2)">
+      <div style="font-family:'Orbitron';font-size:11px;letter-spacing:2px;color:var(--c2);margin-bottom:12px">RESUMEN</div>
+      <div class="ist"><span class="k">Archivos</span><span class="v" id="d-c">0</span></div>
+      <div class="ist"><span class="k">Espacio</span><span class="v" id="d-s">0 B</span></div>
+      <div class="ist"><span class="k">Tipo principal</span><span class="v" id="d-t">—</span></div>
+      <div style="margin-top:12px"><button class="btn s d g" id="clr">Vaciar todo</button></div>
+    </div>
+  </div>
+  <div style="margin-top:18px;border:1px solid var(--cb);border-radius:8px;padding:16px;background:rgba(0,0,0,.2)">
+    <div style="font-family:'Orbitron';font-size:11px;letter-spacing:2px;color:var(--c2);margin-bottom:12px">ARCHIVOS GUARDADOS</div>
+    <input type="text" id="fsearch" placeholder="Buscar…" style="margin-bottom:10px"/>
+    <div id="flist"></div>
+  </div>`;
+}
+function bindDB(){
+  const drop=$('#drop'),fi=$('#fi');
+  drop.onclick=()=>fi.click();
+  drop.ondragover=e=>{e.preventDefault();drop.classList.add('dg')};
+  drop.ondragleave=()=>drop.classList.remove('dg');
+  drop.ondrop=e=>{e.preventDefault();drop.classList.remove('dg');handleFiles(e.dataTransfer.files)};
+  fi.onchange=e=>handleFiles(e.target.files);
+  $('#clr').onclick=async()=>{if(confirm('¿Vaciar toda la base de datos?')){await dbClear();renderFiles();toast('Base de datos vaciada')}};
+  $('#fsearch').oninput=renderFiles;
+  renderFiles();
+}
+async function handleFiles(fs){
+  const note=$('#fnote')?$('#fnote').value:'';
+  for(const f of fs)await dbAdd(f,note);
+  toast(fs.length+' archivo(s) guardado(s)');log('Subidos '+fs.length+' archivo(s)');
+  if($('#fnote'))$('#fnote').value='';
+  if($('#fi'))$('#fi').value='';
+  renderFiles();updateStats();
+}
+async function renderFiles(){
+  if(!$('#flist'))return;
+  const all=await dbAll();const q=($('#fsearch')?$('#fsearch').value:'').toLowerCase();
+  const list=all.filter(f=>f.name.toLowerCase().includes(q)).reverse();
+  const c=$('#flist');
+  if(!list.length)c.innerHTML='<div class="empty">Sin archivos. Sube alguno ↑</div>';
+  else c.innerHTML=list.map(f=>`<div class="frow" data-id="${f.id}"><div class="fico">${fIco(f.type)}</div><div class="finf"><div class="fn">${f.name}</div><div class="fm">${fb(f.size)} · ${new Date(f.date).toLocaleString('es-ES')}${f.note?' · '+f.note:''}</div></div><div class="fact"><button class="btn s" data-a="dl">↓</button><button class="btn s d" data-a="dl2">✕</button></div></div>`).join('');
+  c.querySelectorAll('.frow').forEach(r=>{const id=+r.dataset.id;
+    r.querySelector('[data-a=dl]').onclick=async()=>{const f=all.find(x=>x.id===id);const u=URL.createObjectURL(f.blob);const a=document.createElement('a');a.href=u;a.download=f.name;a.click();URL.revokeObjectURL(u)};
+    r.querySelector('[data-a=dl2]').onclick=async()=>{await dbDel(id);renderFiles();updateStats();toast('Eliminado')};
+  });
+  if($('#d-c'))$('#d-c').textContent=all.length;
+  if($('#d-s'))$('#d-s').textContent=fb(all.reduce((s,f)=>s+f.size,0));
+  if($('#d-t')&&all.length){const cs={};all.forEach(f=>{const c=(f.type||'').split('/')[0]||'otro';cs[c]=(cs[c]||0)+1});$('#d-t').textContent=Object.entries(cs).sort((a,b)=>b[1]-a[1])[0][0]}
+}
+
+/* ============ VISTA: CONTROL ============ */
+function ctrlHTML(){
+  return `<div class="stitle">SISTEMA & SENSORES</div><div class="ssub">Información y acciones disponibles en este navegador</div>
+  <div class="g2" style="margin-bottom:18px">
+    <div><div class="ist"><span class="k">Plataforma</span><span class="v" id="i-plat">—</span></div><div class="ist"><span class="k">CPU</span><span class="v" id="i-cpu">—</span></div><div class="ist"><span class="k">RAM</span><span class="v" id="i-ram">—</span></div><div class="ist"><span class="k">Idioma</span><span class="v" id="i-lang">—</span></div></div>
+    <div><div class="ist"><span class="k">Red</span><span class="v" id="i-net">—</span></div><div class="ist"><span class="k">Pantalla</span><span class="v" id="i-scr">—</span></div><div class="ist"><span class="k">Batería</span><span class="v" id="i-bat">—</span></div><div class="ist"><span class="k">Geo</span><span class="v" id="i-geo">—</span></div></div>
+  </div>
+  <div style="font-family:'Orbitron';font-size:11px;letter-spacing:2px;color:var(--c2);margin-bottom:12px">ACCIONES</div>
+  <div class="cg">
+    <div class="cc" id="a-fs"><div class="ci"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3H5a2 2 0 00-2 2v3M21 8V5a2 2 0 00-2-2h-3M3 16v3a2 2 0 002 2h3M16 21h3a2 2 0 002-2v-3"/></svg></div><div class="ct">Pantalla</div><div class="cd" id="fs-s">Ventana</div></div>
+    <div class="cc" id="a-wl"><div class="ci"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.2 4.2l1.4 1.4M18.4 18.4l1.4 1.4M1 12h2M21 12h2M4.2 19.8l1.4-1.4M18.4 5.6l1.4-1.4"/></svg></div><div class="ct">Despierto</div><div class="cd" id="wl-s">Permitir dormir</div></div>
+    <div class="cc" id="a-nt"><div class="ci"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9M13.7 21a2 2 0 01-3.4 0"/></svg></div><div class="ct">Aviso</div><div class="cd" id="nt-s">Probar</div></div>
+    <div class="cc" id="a-cb"><div class="ci"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 012 2v14a2 2 0 01-2 2H6a2 2 0 01-2-2V6a2 2 0 012-2h2"/></svg></div><div class="ct">Portapapeles</div><div class="cd" id="cb-s">Leer/copiar</div></div>
+    <div class="cc" id="a-vb"><div class="ci"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12h2M20 12h2M12 2v2M12 20v2"/></svg></div><div class="ct">Vibrar</div><div class="cd" id="vb-s">Probar</div></div>
+    <div class="cc" id="a-sp"><div class="ci"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 5L6 9H2v6h4l5 4V5z"/><path d="M19 5a8 8 0 010 14"/></svg></div><div class="ct">Voz</div><div class="cd" id="sp-s">Síntesis</div></div>
+    <div class="cc" id="a-url"><div class="ci"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 007 0l3-3a5 5 0 00-7-7l-1 1"/><path d="M14 11a5 5 0 00-7 0l-3 3a5 5 0 007 7l1-1"/></svg></div><div class="ct">Abrir</div><div class="cd">Nueva pestaña</div></div>
+    <div class="cc" id="a-shot"><div class="ci"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z"/><circle cx="12" cy="13" r="4"/></svg></div><div class="ct">Foto</div><div class="cd">Cámara</div></div>
+  </div>`;
+}
+function bindCtrl(){
+  $('#a-fs').onclick=async()=>{if(!document.fullscreenElement){await document.documentElement.requestFullscreen().catch(()=>{})}else{await document.exitFullscreen().catch(()=>{})}};
+  $('#a-wl').onclick=async()=>{try{if(!window._wl&&navigator.wakeLock){window._wl=await navigator.wakeLock.request('screen');$('#wl-s').textContent='Bloqueada';$('#a-wl').classList.add('on');window._wl.onrelease=()=>{window._wl=null;$('#a-wl').classList.remove('on');$('#wl-s').textContent='Permitir dormir'}}else if(window._wl){window._wl.release()}}catch(e){toast('No soportado',true)}};
+  $('#a-nt').onclick=async()=>{if(!('Notification'in window)){toast('No soportado',true);return}let p=Notification.permission;if(p==='default')p=await Notification.requestPermission();if(p==='granted'){new Notification('J.A.R.V.I.S',{body:'Sistema operativo. Notificación de prueba.'});$('#nt-s').textContent='Enviada ✓';$('#a-nt').classList.add('on')}else{$('#nt-s').textContent='Denegado'}};
+  $('#a-cb').onclick=async()=>{try{const t=await navigator.clipboard.readText();if(t){$('#ci').value=t;toast('Pegado en chat')}else{await navigator.clipboard.writeText('JARVIS '+Date.now());toast('Copiado')}}catch(e){await navigator.clipboard.writeText('JARVIS');toast('Copiado (lectura bloqueada)')}};
+  $('#a-vb').onclick=()=>{if(navigator.vibrate){navigator.vibrate([100,50,100,50,200]);$('#vb-s').textContent='Vibrando…'}else{$('#vb-s').textContent='No soportado'}};
+  $('#a-sp').onclick=()=>{speak('Sistema operativo. Todos los sensores funcionando.');$('#sp-s').textContent='Hablando…';setTimeout(()=>$('#sp-s').textContent='Síntesis',2500)};
+  $('#a-url').onclick=()=>{const u=prompt('URL:','https://');if(u)window.open(u,'_blank')};
+  $('#a-shot').onclick=()=>{if(!camStream){toast('Cámara inactiva',true);return}const c=document.createElement('canvas');c.width=$('#cam').videoWidth||640;c.height=$('#cam').videoHeight||480;const x=c.getContext('2d');if(CFG.mirror){x.translate(c.width,0);x.scale(-1,1)}x.drawImage($('#cam'),0,0);c.toBlob(b=>{const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download='max-'+Date.now()+'.png';a.click();toast('Foto guardada')})};
+}
+async function loadSys(){
+  if ($('#i-plat')) $('#i-plat').textContent=navigator.platform||'—';
+  if ($('#i-cpu')) $('#i-cpu').textContent=(navigator.hardwareConcurrency||'—')+' núcleos';
+  if ($('#i-ram')) $('#i-ram').textContent=navigator.deviceMemory?navigator.deviceMemory+' GB':'N/D';
+  if ($('#i-lang')) $('#i-lang').textContent=navigator.language;
+  if ($('#i-net')) $('#i-net').textContent=navigator.onLine?'En línea':'Offline';
+  if ($('#i-scr')) $('#i-scr').textContent=screen.width+'×'+screen.height;
+  if ($('#i-geo')) {
+    const geoText = $('#s-geo') ? $('#s-geo').textContent : '';
+    if (geoText && geoText !== '—' && geoText !== 'Denegada') {
+      const parts = geoText.split(',');
+      const lat = parseFloat(parts[0]);
+      const lon = parseFloat(parts[1]);
+      if (!isNaN(lat) && !isNaN(lon)) {
+        $('#i-geo').textContent = lat.toFixed(2)+','+lon.toFixed(2);
+      }
+    } else {
+      $('#i-geo').textContent='—';
+    }
+  }
+  if(navigator.getBattery){
+    const b=await navigator.getBattery();
+    const u=()=>{
+      if ($('#i-bat')) $('#i-bat').textContent=Math.round(b.level*100)+'% '+(b.charging?'⚡':'');
+    };
+    u();
+    b.onlevelchange=u;
+    b.onchargingchange=u;
+  } else {
+    if ($('#i-bat')) $('#i-bat').textContent='N/D';
+  }
+  // panel lateral
+  if ($('#s-cpu')) $('#s-cpu').textContent=(navigator.hardwareConcurrency||'—')+'c';
+  if ($('#s-mem')) $('#s-mem').textContent=navigator.deviceMemory?navigator.deviceMemory+'GB':'—';
+  if(navigator.getBattery){
+    const b=await navigator.getBattery();
+    if ($('#s-bat')) $('#s-bat').textContent=Math.round(b.level*100)+'%';
+  }
+}
+
+/* ============ VISTA: PLAN ============ */
+let tasks=JSON.parse(localStorage.getItem('jrv_tasks')||'[]');
+let tFilter='all';
+const saveTasks=()=>localStorage.setItem('jrv_tasks',JSON.stringify(tasks));
+function planHTML(){
+  return `<div class="stitle">OBJETIVOS & TAREAS</div><div class="ssub">Se guardan automáticamente en este dispositivo</div>
+  <div style="border:1px solid var(--cb);border-radius:8px;padding:16px;background:rgba(0,0,0,.2);margin-bottom:16px">
+    <div class="row">
+      <div class="fld" style="flex:2"><label>Título</label><input type="text" id="t-t" placeholder="Ej: Revisar interfaz"/></div>
+      <div class="fld"><label>Prioridad</label><select id="t-p"><option value="low">Baja</option><option value="med" selected>Media</option><option value="high">Alta</option></select></div>
+      <div class="fld"><label>Fecha</label><input type="date" id="t-d"/></div>
+      <button class="btn" id="t-add">+ Añadir</button>
+    </div>
+  </div>
+  <div style="border:1px solid var(--cb);border-radius:8px;padding:16px;background:rgba(0,0,0,.2)">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px"><div style="font-family:'Orbitron';font-size:11px;letter-spacing:2px;color:var(--c2)">LISTA</div><div style="font-size:11px;color:var(--dim)" id="t-c">0</div></div>
+    <div class="row" style="margin-bottom:10px"><div class="fld"><input type="text" id="t-s" placeholder="Filtrar…"/></div><button class="btn s g" data-f="all">Todas</button><button class="btn s g" data-f="pending">Pendientes</button><button class="btn s g" data-f="done">Hechas</button></div>
+    <div id="t-l"></div>
+  </div>`;
+}
+function bindPlan(){
+  $('#t-add').onclick=()=>{const t=$('#t-t').value.trim();if(!t){toast('Escribe un título',true);return}tasks.push({id:'t'+Date.now(),title:t,prio:$('#t-p').value,date:$('#t-d').value,done:false,created:Date.now()});saveTasks();$('#t-t').value='';$('#t-d').value='';renderTasks();toast('Tarea añadida');log('Tarea creada')};
+  $('#t-s').oninput=renderTasks;
+  document.querySelectorAll('[data-f]').forEach(b=>b.onclick=()=>{tFilter=b.dataset.f;renderTasks()});
+}
+function renderTasks(){
+  if(!$('#t-l'))return;
+  const q=($('#t-s')?$('#t-s').value:'').toLowerCase();
+  let l=tasks.filter(t=>t.title.toLowerCase().includes(q));
+  if(tFilter==='pending')l=l.filter(t=>!t.done);
+  if(tFilter==='done')l=l.filter(t=>t.done);
+  const c=$('#t-l');
+  if(!l.length)c.innerHTML='<div class="empty">Sin tareas.</div>';
+  else c.innerHTML=l.map(t=>`<div class="tk ${t.prio} ${t.done?'done':''}" data-id="${t.id}"><input type="checkbox" ${t.done?'checked':''} data-a="tg"/><div class="tb"><div class="tt">${t.title}</div><div class="tm">${t.prio.toUpperCase()}${t.date?' · '+t.date:''} · ${new Date(t.created).toLocaleDateString('es-ES')}</div></div><button class="btn s d g" data-a="del">✕</button></div>`).join('');
+  c.querySelectorAll('.tk').forEach(r=>{const id=r.dataset.id;r.querySelector('[data-a=tg]').onchange=()=>{const t=tasks.find(x=>x.id===id);t.done=!t.done;saveTasks();renderTasks()};r.querySelector('[data-a=del]').onclick=()=>{tasks=tasks.filter(x=>x.id!==id);saveTasks();renderTasks();toast('Eliminada')}});
+  if($('#t-c'))$('#t-c').textContent=tasks.length+' totales · '+tasks.filter(t=>t.done).length+' hechas';
+  updateStats();
+}
+
+/* ============ VISTA: CONFIG ============ */
+function cfgHTML(){
+  return `<div class="stitle">PERSONALIZACIÓN & AJUSTES</div><div class="ssub">Ajusta tu interfaz holográfica y configura tu perfil personal</div>
+  
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+    
+    <div>
+      <div style="border:1px solid var(--cb);border-radius:8px;padding:16px;background:rgba(0,0,0,.2);margin-bottom:14px">
+        <div style="font-size:11px;color:var(--c2);margin-bottom:8px;font-weight:600">APARIENCIA</div>
+        <div class="srow"><div><div class="nm">Color de acento</div><div class="mt">Tema holográfico</div></div><div style="display:flex;gap:6px;flex-wrap:wrap;max-width:240px;justify-content:flex-end" id="csw">${['#ffffff','#8e8e93','#1a1a1a','#ff4d6d','#ff4da6','#b388ff','#2a75ff','#38e8ff','#00f5d4','#39ffa0','#adff2f','#ffcc44','#ff7a00','#a0522d'].map(c=>`<span class="csw ${c===CFG.c?'sel':''}" data-c="${c}" style="background:${c}"></span>`).join('')}</div></div>
+        <div class="srow"><div><div class="nm">Espejo de cámara</div><div class="mt">Invertir horizontalmente</div></div><label class="sw"><input type="checkbox" id="c-mir" ${CFG.mirror?'checked':''}><span class="sl"></span></label></div>
+        <div class="srow"><div><div class="nm">Esqueleto de manos</div><div class="mt">Mover ventanas con el dedo (pinza)</div></div><label class="sw"><input type="checkbox" id="c-hands" ${CFG.hands?'checked':''}><span class="sl"></span></label></div>
+      </div>
+
+      <div style="border:1px solid var(--cb);border-radius:8px;padding:16px;background:rgba(0,0,0,.2);margin-bottom:14px">
+        <div style="font-size:11px;color:var(--c2);margin-bottom:8px;font-weight:600">AUDIO & VOZ</div>
+        <div class="srow"><div><div class="nm">Respuestas por voz</div><div class="mt">MAX lee mensajes</div></div><label class="sw"><input type="checkbox" id="c-tts" ${CFG.tts?'checked':''}><span class="sl"></span></label></div>
+        <div class="srow"><div><div class="nm">Voz del sistema</div><div class="mt">Idioma/acento local</div></div><select id="cfg-voice" style="width:180px"></select></div>
+      </div>
+
+      <div style="border:1px solid var(--cb);border-radius:8px;padding:16px;background:rgba(0,0,0,.2);margin-bottom:14px">
+        <div style="font-size:11px;color:var(--c2);margin-bottom:8px;font-weight:600">VOZ (ELEVENLABS)</div>
+        <div style="margin-bottom:10px">
+          <label>ElevenLabs API Key (opcional)</label>
+          <input type="password" id="s-eleven-key" placeholder="xi-api-key..." value="${CFG['s-eleven-key']||''}" autocomplete="off"/>
+        </div>
+        <div>
+          <label>ElevenLabs Voice ID</label>
+          <input type="text" id="s-eleven-voice" placeholder="Id de la voz..." value="${CFG['s-eleven-voice']||''}" autocomplete="off"/>
+        </div>
+      </div>
+    </div>
+
+    <div>
+      <div style="border:1px solid var(--cb);border-radius:8px;padding:16px;background:rgba(0,0,0,.2);margin-bottom:14px">
+        <div style="font-size:11px;color:var(--c2);margin-bottom:8px;font-weight:600">INFORMACIÓN PERSONAL</div>
+        <div style="margin-bottom:10px">
+          <label>Nombre del operador</label>
+          <input type="text" id="s-name" placeholder="Tu nombre" value="${CFG['s-name']||''}" autocomplete="off"/>
+        </div>
+        <div class="row" style="margin-bottom:10px">
+          <div style="flex:1">
+            <label>Fecha de nacimiento</label>
+            <input type="date" id="s-bday" value="${CFG['s-bday']||''}"/>
+          </div>
+          <div style="flex:1">
+            <label>Ocupación</label>
+            <select id="s-occ">
+              <option value="" ${!CFG['s-occ']?'selected':''}>—</option>
+              <option value="estudio" ${CFG['s-occ']==='estudio'?'selected':''}>Estudio</option>
+              <option value="trabajo" ${CFG['s-occ']==='trabajo'?'selected':''}>Trabajo</option>
+              <option value="nada" ${CFG['s-occ']==='nada'?'selected':''}>Nada</option>
+            </select>
+          </div>
+        </div>
+        <div>
+          <label>Dirección de casa</label>
+          <input type="text" id="s-address" placeholder="Calle, número, ciudad" value="${CFG['s-address']||''}" autocomplete="off"/>
+        </div>
+      </div>
+
+      <div style="border:1px solid var(--cb);border-radius:8px;padding:16px;background:rgba(0,0,0,.2);margin-bottom:14px">
+        <div style="font-size:11px;color:var(--c2);margin-bottom:8px;font-weight:600">BIOGRAFÍA</div>
+        <div>
+          <label>Notas y detalles personales</label>
+          <textarea id="s-bio" placeholder="Cuéntale a MAX más sobre ti..." style="height:56px;resize:vertical">${CFG['s-bio']||''}</textarea>
+        </div>
+      </div>
+
+      <div style="border:1px solid var(--cb);border-radius:8px;padding:16px;background:rgba(0,0,0,.2);margin-bottom:14px">
+        <div style="font-size:11px;color:var(--c2);margin-bottom:8px;font-weight:600">CONEXIÓN (GROQ)</div>
+        <div>
+          <label>Groq API Key</label>
+          <input type="password" id="s-groq" placeholder="gsk_..." value="${CFG['s-groq']||''}" autocomplete="off"/>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div style="border:1px solid var(--cb);border-radius:8px;padding:16px;background:rgba(0,0,0,.2)">
+    <div style="font-size:11px;color:var(--c2);margin-bottom:8px;font-weight:600">DATOS & SISTEMA</div>
+    <div style="display:flex;gap:12px">
+      <div style="flex:1" class="srow"><div><div class="nm">Restablecer config</div><div class="mt">Valores por defecto</div></div><button class="btn s g" id="c-reset">Restablecer</button></div>
+      <div style="flex:1" class="srow"><div><div class="nm">Borrar TODO</div><div class="mt">Archivos, tareas, ajustes</div></div><button class="btn s d" id="c-wipe">ELIMINAR</button></div>
+    </div>
+  </div>`;
+}
+function bindCfg(){
+  $('#csw').querySelectorAll('.csw').forEach(s=>s.onclick=()=>{CFG.c=s.dataset.c;saveCfg();applyCfg();$('#csw').querySelectorAll('.csw').forEach(x=>x.classList.toggle('sel',x===s))});
+  $('#c-mir').onchange=e=>{CFG.mirror=e.target.checked;saveCfg();applyCfg()};
+  $('#c-hands').onchange=e=>{CFG.hands=e.target.checked;saveCfg();toggleHands(e.target.checked)};
+  $('#c-tts').onchange=e=>{CFG.tts=e.target.checked;saveCfg()};
+  loadVoices();
+  const sel=$('#cfg-voice');if(sel)sel.onchange=e=>{CFG.voice=e.target.value;saveCfg()};
+  
+  // Vincular los nuevos inputs
+  $('#s-name').oninput=e=>{CFG['s-name']=e.target.value;saveCfg()};
+  $('#s-bday').onchange=e=>{CFG['s-bday']=e.target.value;saveCfg()};
+  $('#s-occ').onchange=e=>{CFG['s-occ']=e.target.value;saveCfg()};
+  $('#s-address').oninput=e=>{CFG['s-address']=e.target.value;saveCfg()};
+  $('#s-bio').oninput=e=>{CFG['s-bio']=e.target.value;saveCfg()};
+  $('#s-groq').oninput=e=>{CFG['s-groq']=e.target.value;saveCfg()};
+  $('#s-eleven-key').oninput=e=>{CFG['s-eleven-key']=e.target.value;saveCfg()};
+  $('#s-eleven-voice').oninput=e=>{CFG['s-eleven-voice']=e.target.value;saveCfg()};
+
+  $('#c-reset').onclick=()=>{CFG={...DEF};saveCfg();applyCfg();openView('config');toast('Restablecido')};
+  $('#c-wipe').onclick=async()=>{if(confirm('¿Borrar TODO? No se puede deshacer.')){await dbClear();tasks=[];saveTasks();localStorage.removeItem('max_cfg');CFG={...DEF};applyCfg();toast('Todo eliminado');log('Sistema borrado')}};
+}
+
+let weatherData = null;
+
+async function getLocalWeather(lat, lon) {
+  try {
+    const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,pressure_msl,surface_pressure,wind_speed_10m,wind_direction_10m&timezone=auto`;
+    const res = await fetch(url);
+    if (!res.ok) {
+      log("Error clima: Servidor respondió " + res.status);
+      return;
+    }
+    const data = await res.json();
+    weatherData = {
+      temp: data.current.temperature_2m,
+      humidity: data.current.relative_humidity_2m,
+      apparent: data.current.apparent_temperature,
+      code: data.current.weather_code,
+      pressureMsl: data.current.pressure_msl,
+      surfacePressure: data.current.surface_pressure,
+      windSpeed: data.current.wind_speed_10m,
+      windDir: data.current.wind_direction_10m,
+      elevation: data.elevation
+    };
+    log("Clima actualizado");
+  } catch (e) {
+    console.error("Error al obtener clima:", e);
+    log("Fallo al obtener clima");
+  }
+}
+
+function windDirectionToText(deg){
+  if(deg === undefined || deg === null) return 'desconocida';
+  const directions = ['Norte (N)', 'Noreste (NE)', 'Este (E)', 'Sureste (SE)', 'Sur (S)', 'Suroeste (SO)', 'Oeste (O)', 'Noroeste (NO)'];
+  const idx = Math.round(deg / 45) % 8;
+  return directions[idx];
+}
+
+function weatherCodeToText(code){
+  const map = {
+    0:'despejado',1:'mayormente despejado',2:'parcialmente nublado',3:'nublado',
+    45:'niebla',48:'niebla con escarcha',
+    51:'llovizna ligera',53:'llovizna moderada',55:'llovizna intensa',
+    56:'llovizna helada ligera',57:'llovizna helada intensa',
+    61:'lluvia ligera',63:'lluvia moderada',65:'lluvia intensa',
+    66:'lluvia helada ligera',67:'lluvia helada intensa',
+    71:'nieve ligera',73:'nieve moderada',75:'nieve intensa',77:'gránulos de nieve',
+    80:'chubascos ligeros',81:'chubascos moderados',82:'chubascos violentos',
+    85:'chubascos de nieve ligeros',86:'chubascos de nieve intensos',
+    95:'tormenta',96:'tormenta con granizo ligero',99:'tormenta con granizo intenso'
+  };
+  return map[code] || 'condiciones desconocidas';
+}
+
+async function getFallbackLocation() {
+  // Intentar freeipapi.com primero
+  try {
+    const res = await fetch('https://freeipapi.com/api/json');
+    if (res.ok) {
+      const data = await res.json();
+      if (data.latitude && data.longitude) {
+        return { lat: data.latitude, lon: data.longitude, city: data.cityName || 'Desconocida' };
+      }
+    }
+  } catch (e) {
+    console.warn("Fallo freeipapi:", e);
+  }
+
+  // Fallback a ipapi.co
+  try {
+    const res = await fetch('https://ipapi.co/json/');
+    if (res.ok) {
+      const data = await res.json();
+      if (data.latitude && data.longitude) {
+        return { lat: data.latitude, lon: data.longitude, city: data.city || 'Desconocida' };
+      }
+    }
+  } catch (e) {
+    console.warn("Fallo ipapi.co:", e);
+  }
+  return null;
+}
+
+/* ============ STATS GLOBALES ============ */
+async function updateStats(){
+  try{const a=await dbAll();$('#s-files').textContent=a.length}catch(e){}
+  $('#s-tasks').textContent=tasks.length;
+
+  const getAndSetWeather = async (lat, lon, type, label) => {
+    if ($('#s-geo')) {
+      $('#s-geo').textContent = lat.toFixed(1) + ',' + lon.toFixed(1);
+      $('#s-geo').dataset.done = type;
+    }
+    if ($('#i-geo')) {
+      $('#i-geo').textContent = lat.toFixed(2) + ',' + lon.toFixed(2) + (label ? ' (' + label + ')' : '');
+    }
+    await getLocalWeather(lat, lon);
+  };
+
+  // Intentar geolocalización nativa del navegador primero
+  if(navigator.geolocation && $('#s-geo').dataset.done !== 'gps'){
+    navigator.geolocation.getCurrentPosition(async p=>{
+      await getAndSetWeather(p.coords.latitude, p.coords.longitude, 'gps', 'GPS');
+    }, async ()=>{
+      // Fallback a IP Geolocation si falla o es denegada (común en file://)
+      if (!$('#s-geo').dataset.done) {
+        const ipLoc = await getFallbackLocation();
+        if (ipLoc) {
+          await getAndSetWeather(ipLoc.lat, ipLoc.lon, 'ip', 'IP: ' + ipLoc.city);
+        } else {
+          $('#s-geo').textContent='Denegada';
+        }
+      }
+    },{timeout:4000});
+  } else if (!navigator.geolocation && !$('#s-geo').dataset.done) {
+    // Fallback directo si no está soportada
+    const ipLoc = await getFallbackLocation();
+    if (ipLoc) {
+      await getAndSetWeather(ipLoc.lat, ipLoc.lon, 'ip', 'IP: ' + ipLoc.city);
+    } else {
+      $('#s-geo').textContent='No soportada';
+    }
+  }
+}
+
+/* ============ START ============ */
+async function initSystem() {
+  const gs = $('#gs');
+  if (!gs) return;
+  
+  gs.innerHTML = '<span style="color:var(--c2)">Verificando acceso a cámara...</span>';
+  const cOk = await startCam();
+  if (!cOk) {
+    gs.innerHTML = '<span style="color:var(--err);font-weight:bold">Acceso a la CÁMARA denegado. Permiso obligatorio para iniciar MAX.</span>';
+    return;
+  }
+  
+  gs.innerHTML = '<span style="color:var(--c2)">Cámara ✓ · Verificando acceso a micrófono...</span>';
+  const mOk = await startMic();
+  if (!mOk) {
+    gs.innerHTML = '<span style="color:var(--err);font-weight:bold">Acceso al MICRÓFONO denegado. Permiso obligatorio para iniciar MAX.</span>';
+    return;
+  }
+  
+  gs.innerHTML = '<span style="color:var(--c2)">Cámara ✓ · Micrófono ✓ · Verificando localización...</span>';
+  let geoOk = false;
+  
+  if (navigator.geolocation) {
+    try {
+      const p = await new Promise((resolve, reject) => {
+        navigator.geolocation.getCurrentPosition(resolve, reject, { timeout: 4000 });
+      });
+      const lat = p.coords.latitude;
+      const lon = p.coords.longitude;
+      if ($('#s-geo')) {
+        $('#s-geo').textContent = lat.toFixed(1) + ',' + lon.toFixed(1);
+        $('#s-geo').dataset.done = 'gps';
+      }
+      if ($('#i-geo')) {
+        $('#i-geo').textContent = lat.toFixed(2) + ',' + lon.toFixed(2) + ' (GPS)';
+      }
+      await getLocalWeather(lat, lon);
+      geoOk = true;
+    } catch (e) {
+      console.warn("GPS falló al arrancar:", e);
+      // Fallback a IP Geolocation si falla el GPS (común en file://)
+      const ipLoc = await getFallbackLocation();
+      if (ipLoc) {
+        if ($('#s-geo')) {
+          $('#s-geo').textContent = ipLoc.lat.toFixed(1) + ',' + ipLoc.lon.toFixed(1);
+          $('#s-geo').dataset.done = 'ip';
+        }
+        if ($('#i-geo')) {
+          $('#i-geo').textContent = ipLoc.lat.toFixed(2) + ',' + ipLoc.lon.toFixed(2) + ' (IP: ' + ipLoc.city + ')';
+        }
+        await getLocalWeather(ipLoc.lat, ipLoc.lon);
+        geoOk = true;
+      }
+    }
+  } else {
+    const ipLoc = await getFallbackLocation();
+    if (ipLoc) {
+      if ($('#s-geo')) {
+        $('#s-geo').textContent = ipLoc.lat.toFixed(1) + ',' + ipLoc.lon.toFixed(1);
+        $('#s-geo').dataset.done = 'ip';
+      }
+      if ($('#i-geo')) {
+        $('#i-geo').textContent = ipLoc.lat.toFixed(2) + ',' + ipLoc.lon.toFixed(2) + ' (IP: ' + ipLoc.city + ')';
+      }
+      await getLocalWeather(ipLoc.lat, ipLoc.lon);
+      geoOk = true;
+    }
+  }
+
+  if (!geoOk) {
+    gs.innerHTML = '<span style="color:var(--err);font-weight:bold">Acceso a la UBICACIÓN denegado. Permiso obligatorio para iniciar MAX.</span>';
+    return;
+  }
+
+  gs.innerHTML = '<span style="color:var(--c2)">Cámara ✓ · Micrófono ✓ · Ubicación ✓ · Inicializando...</span>';
+  
+  let hOk = false;
+  if (CFG.hands) {
+    hOk = await startHands().catch(() => false);
+  }
+  
+  setTimeout(() => {
+    $('#gate').classList.add('hide');
+    loadSys();
+    updateStats();
+    toast('Bienvenido, señor. Sistema MAX en línea.');
+    log('Sistema MAX iniciado');
+  }, 800);
+}
+
+/* ============ MEDIAPIPE HANDS — esqueleto de la mano ============ */
+/* Dibuja el esqueleto de la mano sobre la cámara y permite mover las
+   ventanas cerrando la pinza (pulgar + índice) y arrastrando.
+   Funciona con la cámara que ya se pidió al iniciar.                */
+let mpHands=null, mpLoop=false;
+const hCanvas=$('#hands-canvas'), hctx=hCanvas.getContext('2d');
+const hStatus=$('#hand-status');
+
+function resizeHandsCanvas(){
+  hCanvas.width=window.innerWidth;
+  hCanvas.height=window.innerHeight;
+}
+window.addEventListener('resize',resizeHandsCanvas);
+resizeHandsCanvas();
+
+/* === Dibujo de la mano: SOLO PUNTOS holográficos uniformes (sin líneas) ===
+   Todos los puntos son del mismo tamaño, limpio y minimalista.
+   La punta del índice y del pulgar destacan con un anillo blanco.        */
+
+const DOT_COLOR='rgba(122,247,255,ALPHA)'; // cian holográfico (legacy)
+
+// color del tema leído de las variables CSS (sigue el color de acento)
+function themeDotColor(){
+  return getComputedStyle(document.documentElement).getPropertyValue('--c2').trim()||'#7af7ff';
+}
+
+// un punto uniforme: núcleo sólido + halo suave
+function dot(p,size,highlight){
+  const base=highlight?'#ffffff':themeDotColor();
+  // halo externo grande y translúcido
+  hctx.globalAlpha=highlight?0.22:0.16;
+  hctx.fillStyle=base;
+  hctx.beginPath();
+  hctx.arc(p.x,p.y,size*3,0,Math.PI*2);
+  hctx.fill();
+  // halo medio
+  hctx.globalAlpha=highlight?0.5:0.4;
+  hctx.beginPath();
+  hctx.arc(p.x,p.y,size*1.8,0,Math.PI*2);
+  hctx.fill();
+  // núcleo sólido
+  hctx.globalAlpha=1;
+  hctx.beginPath();
+  hctx.fillStyle=base;
+  hctx.arc(p.x,p.y,size,0,Math.PI*2);
+  hctx.fill();
+  // anillo para los puntos destacados (índice / pulgar)
+  if(highlight){
+    hctx.globalAlpha=0.9;
+    hctx.strokeStyle=base;
+    hctx.lineWidth=1.6;
+    hctx.beginPath();
+    hctx.arc(p.x,p.y,size*2.3,0,Math.PI*2);
+    hctx.stroke();
+  }
+  hctx.globalAlpha=1;
+}
+
+function drawSkeleton(lm){
+  const rgb=getComputedStyle(document.documentElement).getPropertyValue('--rgb').trim()||'56,232,255';
+  hctx.shadowColor='rgba('+rgb+',.9)';
+  hctx.shadowBlur=12;
+
+  // TAMAÑO UNIFORME para todos los puntos
+  const SIZE=4;
+
+  // todos los puntos normales (tamaño y color iguales)
+  for(let i=0;i<lm.length;i++){
+    if(i===8||i===4) continue; // índice y pulgar se dibujan aparte
+    dot(lm[i],SIZE,false);
+  }
+
+  // punta del ÍNDICE (8) y PULGAR (4) - blanco con anillo
+  dot(lm[4],SIZE,true);
+  dot(lm[8],SIZE,true);
+
+  hctx.shadowBlur=0;
+  hctx.globalAlpha=1;
+}
+
+/* ============ Arrastre por pinza — MULTI-MANO (slots) ============ */
+// Cada mano tiene su propio slot: cursor, suavizado y arrastre independientes.
+function dist(a,b){const dx=a.x-b.x,dy=a.y-b.y;return Math.hypot(dx,dy);}
+
+const GRACE_MS=450;     // periodo de gracia: mano perdida brevemente
+const EXTRA_MS=300;     // extrapolación por velocidad tras perder el dedo
+const EXTRA_STEP=16;    // ms por frame de extrapolación
+const SWIPE_THRESHOLD=14;  // px/frame: por debajo = no pasa nada (no es swipe)
+const SWIPE_GAIN=1.6;      // cuánto momentum se inyecta por unidad de velocidad
+
+// un slot por mano (máx 2). Cada uno totalmente independiente del otro.
+const HANDS=[
+  {el:$('#vcursor'), smX:0,smY:0,prevX:0,prevY:0,velX:0,velY:0,smInit:false,swiping:false,swipeCD:0,armCD:false,
+   drag:{active:false,target:null,offX:0,offY:0,maxX:0,maxY:0},
+   grace:null, extra:null},
+  {el:$('#vcursor2'),smX:0,smY:0,prevX:0,prevY:0,velX:0,velY:0,smInit:false,swiping:false,swipeCD:0,armCD:false,
+   drag:{active:false,target:null,offX:0,offY:0,maxX:0,maxY:0},
+   grace:null, extra:null}
+];
+
+// ¿qué panel/ventana hay bajo el cursor? No se puede agarrar uno que ya
+// esté siendo arrastrado por la OTRA mano (evita tirones).
+function findDraggableUnder(x,y,exclude){
+  const els=document.elementsFromPoint(x,y);
+  for(const el of els){
+    const panel=el.closest('.pnl,.win');
+    if(panel && panel!==exclude){
+      return panel;
+    }
+  }
+  return null;
+}
+
+function beginDrag(slot,x,y){
+  // la otra mano podría estar arrastrando algo: no lo robamos
+  const other=HANDS[1-HANDS.indexOf(slot)];
+  const found=findDraggableUnder(x,y, other?other.drag.target:null);
+  if(!found) return false;
+  const r=found.getBoundingClientRect();
+  slot.drag.target=found;
+  slot.drag.offX=x-r.left;
+  slot.drag.offY=y-r.top;
+  slot.drag.maxX=window.innerWidth-r.width;
+  slot.drag.maxY=window.innerHeight-r.height;
+  slot.drag.active=true;
+  found.classList.add('drag');
+  found.style.left=r.left+'px';
+  found.style.top=r.top+'px';
+  found.style.right='auto';
+  found.style.bottom='auto';
+  found.style.transform='none';
+  found.style.willChange='left,top';
+  return true;
+}
+function moveDrag(slot,x,y){
+  if(!slot.drag.active||!slot.drag.target) return;
+  const nx=Math.max(0,Math.min(x-slot.drag.offX,slot.drag.maxX));
+  const ny=Math.max(0,Math.min(y-slot.drag.offY,slot.drag.maxY));
+  slot.drag.target.style.left=nx+'px';
+  slot.drag.target.style.top=ny+'px';
+}
+function endDrag(slot){
+  if(slot.drag.target){
+    slot.drag.target.classList.remove('drag');
+    slot.drag.target.style.willChange='auto';
+  }
+  slot.drag.active=false;
+  slot.drag.target=null;
+}
+function clearTimers(slot){
+  if(slot.grace){clearTimeout(slot.grace.t);slot.grace=null;}
+  if(slot.extra){clearInterval(slot.extra.t);slot.extra=null;}
+}
+
+/* ¿Un dedo está extendido o flexionado?
+   Para dedos (no pulgar): la punta (tip) está más lejos de la muñeca (0)
+   que la articulación media (pip) -> está extendido.
+   Esto es RELATIVO a la mano, así que funciona aunque no cierres del todo. */
+function fingerExtended(lm, tip, pip){
+  const w=lm[0]; // muñeca
+  const dTip=dist(lm[tip],w), dPip=dist(lm[pip],w);
+  return dTip > dPip*1.05;   // 5% de margen -> suave, no rígido
+}
+
+// ¿estamos sobre el vacío (cámara) o sobre una ventana/panel?
+function isVoidAt(x,y){
+  const els=document.elementsFromPoint(x,y);
+  for(const el of els){
+    if(el.closest('.pnl,.win,#top,#chat,#chat-log,.cb,input,button,.csw')) return false;
+  }
+  return true;
+}
+
+// procesa UNA mano en su slot: cursor + arrastrar ventana (NADA más).
+// La mano NO mueve el entorno. El mundo solo se desplaza con ratón/rueda.
+function processHand(slot, lm, toScreen){
+  const raw=toScreen(lm[8]);           // punta del índice
+  if(!slot.smInit){slot.smX=raw.x;slot.smY=raw.y;slot.prevX=raw.x;slot.prevY=raw.y;slot.smInit=true}
+  const dxRaw=raw.x-slot.prevX, dyRaw=raw.y-slot.prevY;
+  const speed=Math.hypot(dxRaw,dyRaw);
+  slot.prevX=raw.x; slot.prevY=raw.y;
+  const k=Math.max(0.35, Math.min(0.9, 0.35 + speed*0.02));
+  slot.smX+=(raw.x-slot.smX)*k;
+  slot.smY+=(raw.y-slot.smY)*k;
+
+  // detección de dedos
+  const indexExt = fingerExtended(lm,8,6);
+  const middleExt= fingerExtended(lm,12,10);
+  const isPoint = indexExt && !middleExt;   // gesto "uno" (apuntar)
+
+  slot.el.style.left=slot.smX+'px';
+  slot.el.style.top=slot.smY+'px';
+  slot.el.classList.add('show');
+
+  // --- arrastrar ventana: gesto "uno" SOBRE una ventana ---
+  const wasDrag=slot.drag.active;
+  if(wasDrag){
+    if(isPoint){
+      moveDrag(slot,slot.smX,slot.smY);
+      return;
+    }
+    endDrag(slot);
+    slot.el.classList.remove('pinching');
+  }
+  if(isPoint && !isVoidAt(slot.smX, slot.smY)){
+    if(beginDrag(slot,slot.smX,slot.smY)) slot.el.classList.add('pinching');
+  }
+}
+
+function onHandResults(results){
+  hctx.clearRect(0,0,hCanvas.width,hCanvas.height);
+  const hands=results.multiHandLandmarks||[];
+
+  const W=window.innerWidth, H=window.innerHeight;
+
+  /* --- MAPEO CORRECTO con object-fit:cover ---
+     El <video> recorta el vídeo para llenar la pantalla. MediaPipe da
+     coords [0..1] sobre el vídeo SIN recortar. Hay que deshacer el
+     recorte para que el dedo y el cursor coincidan.                      */
+  const vw=$('#cam').videoWidth, vh=$('#cam').videoHeight;
+  let sx=W, sy=H, ox=0, oy=0;
+  if(vw&&vh){
+    const scale=Math.max(W/vw,H/vh);   // cover: el factor mayor
+    sx=vw*scale; sy=vh*scale;          // tamaño del vídeo escalado
+    ox=(W-sx)/2; oy=(H-sy)/2;          // centrado (lo que sobra a cada lado)
+  }
+  const toScreen=p=>({x: W-((p.x*sx)+ox), y:(p.y*sy)+oy});
+
+  // === dibujar el esqueleto (puntos holográficos) de TODAS las manos ===
+  for(let h=0;h<hands.length;h++){
+    drawSkeleton(hands[h].map(toScreen));
+  }
+
+  // === cada mano a su slot (máx 2) ===
+  const present=hands.length;
+
+  // para cada slot: ¿esta mano está visible en este frame?
+  for(let i=0;i<HANDS.length;i++){
+    const slot=HANDS[i];
+    if(i<present){
+      // la mano volvió -> cancelar gracia/extrapolación
+      clearTimers(slot);
+      processHand(slot, hands[i], toScreen);
+    }else{
+      // esta mano se ha perdido (o nunca estuvo)
+      if(!slot.grace && !slot.extra){
+        // extrapolación por velocidad (luz/reflejos borraron el dedo)
+        if(slot.drag.active && (Math.abs(slot.velX)>1||Math.abs(slot.velY)>1)){
+          slot.extra={t:setInterval(()=>{
+            if(!slot.drag.active){clearInterval(slot.extra.t);slot.extra=null;return;}
+            slot.smX+=slot.velX; slot.smY+=slot.velY;
+            moveDrag(slot,slot.smX,slot.smY);
+            slot.el.style.left=slot.smX+'px'; slot.el.style.top=slot.smY+'px';
+          },EXTRA_STEP)};
+          setTimeout(()=>{ if(slot.extra){clearInterval(slot.extra.t);slot.extra=null;} },EXTRA_MS);
+        }
+        // periodo de gracia: no soltar de inmediato
+        if(slot.drag.active){
+          slot.grace={t:setTimeout(()=>{
+            if(slot.drag.active){endDrag(slot);slot.el.classList.remove('pinching');}
+            slot.grace=null;
+            slot.el.classList.remove('show','pinching');
+            slot.smInit=false;
+          },GRACE_MS)};
+        }else{
+          // no había arrastre: simplemente ocultar el cursor
+          slot.el.classList.remove('show','pinching');
+          slot.smInit=false;
+        }
+      }
+    }
+  }
+
+  // estado global de manos
+  if(present){
+    hStatus.classList.add('show');
+    hStatus.innerHTML='<span class="ok">●</span> '+(present>1?'2 MANOS DETECTADAS':'MANO DETECTADA');
+  }else{
+    hStatus.classList.remove('show');
+  }
+}
+
+async function startHands(){
+  if(typeof Hands==='undefined'){log('MediaPipe no cargado');return false;}
+  try{
+    mpHands=new Hands({locateFile:f=>'https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1646424915/'+f});
+    mpHands.setOptions({
+      maxNumHands:2,            // detectar las dos manos
+      modelComplexity:1,        // 1 = más preciso, mejor con movimientos rápidos
+      minDetectionConfidence:0.5,
+      minTrackingConfidence:0.3  // bajo: no suelta el rastro con movimiento rápido
+    });
+    mpHands.onResults(onHandResults);
+    mpLoop=true;
+    const cam=$('#cam');
+    const pump=async()=>{
+      if(!mpLoop||!mpHands) return;
+      if(cam.readyState>=2){
+        await mpHands.send({image:cam}).catch(()=>{});
+      }
+      if(mpLoop) requestAnimationFrame(pump);
+    };
+    pump();
+    log('Esqueleto de manos activado');
+    return true;
+  }catch(e){log('Error MediaPipe: '+e.message);return false;}
+}
+
+// activar/desactivar la detección de manos en caliente
+function toggleHands(on){
+  mpLoop=on;
+  hCanvas.classList.toggle('off',!on);
+  if(!on){
+    hctx.clearRect(0,0,hCanvas.width,hCanvas.height);
+    HANDS.forEach(slot=>{
+      clearTimers(slot);
+      if(slot.drag.active) endDrag(slot);
+      slot.el.classList.remove('show','pinching');
+      slot.smInit=false;
+    });
+    hStatus.classList.remove('show');
+  }else if(!mpHands){
+    startHands();
+  }
+  log(on?'Manos activadas':'Manos desactivadas');
+}
+
+/* ============ ARRASTRE CON RATÓN/TÁCTIL (coordenadas de pantalla) ============ */
+function makeDraggable(panel, handle){
+  handle = handle || panel.querySelector('.pnl-h, .win-h');
+  if(!handle) return;
+  handle.style.touchAction='none';
+  let drag=null, offX=0, offY=0;
+
+  const begin=(clientX,clientY)=>{
+    // posición actual del panel usando offset
+    const left=panel.offsetLeft;
+    const top =panel.offsetTop;
+    offX=clientX-left; offY=clientY-top;
+    drag=true;
+    panel.classList.add('drag');
+    panel.style.willChange='left,top';
+    // Limpiar propiedades right/bottom para evitar conflictos
+    panel.style.right='auto';
+    panel.style.bottom='auto';
+  };
+  const move=(clientX,clientY)=>{
+    if(!drag) return;
+    let nx=clientX-offX, ny=clientY-offY;
+    // mantener dentro de los límites de la pantalla
+    const w=panel.offsetWidth, h=panel.offsetHeight;
+    nx=Math.max(10,Math.min(nx,window.innerWidth-w-10));
+    ny=Math.max(10,Math.min(ny,window.innerHeight-h-10));
+    panel.style.left=nx+'px';
+    panel.style.top =ny+'px';
+  };
+  const end=()=>{ if(drag){drag=null;panel.classList.remove('drag');panel.style.willChange='auto'} };
+
+  handle.addEventListener('pointerdown',e=>{
+    if(e.target.closest('input,button,select,.csw,.x')) return;
+    handle.setPointerCapture(e.pointerId);
+    begin(e.clientX,e.clientY);
+    e.preventDefault();
+  });
+  handle.addEventListener('pointermove',e=>{
+    if(!drag) return;
+    move(e.clientX,e.clientY);
+    e.preventDefault();
+  });
+  const stop=e=>{ if(drag){ try{handle.releasePointerCapture(e.pointerId)}catch(_){} end(); } };
+  handle.addEventListener('pointerup',stop);
+  handle.addEventListener('pointercancel',stop);
+  window.addEventListener('pointerup',e=>{ if(drag){ try{handle.releasePointerCapture(e.pointerId)}catch(_){} end(); } });
+}
+// paneles de las esquinas (arrastrables)
+$$('.pnl').forEach(p=>makeDraggable(p));
+
+/* Las ventanas se inician cerradas y se controlan por voz/conversación */
+// ['db','control','plan','config'].forEach(openView);
+
+/* init */
+applyCfg();
+openDB().then(() => {
+  initSystem();
+});
+animBars();
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  FIREBASE INIT & MODO PC REMOTO
+// ═══════════════════════════════════════════════════════════════════════════
+const _fbCfg = {
+  apiKey: "AIzaSyD3GGY8d09Ad9z8mvCC2ajfws6LQriWuCc",
+  authDomain: "personal-38681.firebaseapp.com",
+  projectId: "personal-38681",
+  storageBucket: "personal-38681.firebasestorage.app",
+  messagingSenderId: "441071897372",
+  appId: "1:441071897372:web:c1aaf8b738fed8b4a8c8d9"
+};
+const _fbApp  = firebase.initializeApp(_fbCfg);
+const _db     = firebase.firestore();
+
+// ID y nombre de este dispositivo (navegador)
+function _myDeviceId() {
+  let id = localStorage.getItem('max_device_id');
+  if (!id) { id = 'browser_' + Math.random().toString(36).slice(2,10); localStorage.setItem('max_device_id', id); }
+  return id;
+}
+function _myDeviceName() {
+  return localStorage.getItem('max_device_name') || navigator.platform || 'Dispositivo';
+}
+
+// Registrar este dispositivo en Firestore como "browser" (sin bridge)
+async function registerThisDevice() {
+  try {
+    await _db.collection('max_devices').doc(_myDeviceId()).set({
+      name: _myDeviceName(),
+      lastSeen: new Date().toISOString(),
+      status: 'browser',
+      deviceId: _myDeviceId()
+    }, { merge: true });
+  } catch(e) { console.warn('Firebase reg:', e); }
+}
+registerThisDevice();
+setInterval(registerThisDevice, 25000);
+
+// ── HTML del panel ────────────────────────────────────────────────────────
+function remoteHTML() {
+  return `
+  <div style="display:flex;height:100%;gap:10px">
+    <!-- Sidebar: lista de PCs -->
+    <div style="width:220px;flex-shrink:0;display:flex;flex-direction:column;gap:8px">
+      <div class="stitle" style="font-size:11px;margin-bottom:4px">DISPOSITIVOS ONLINE</div>
+      <div id="rm-devices" style="flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:6px">
+        <div style="color:var(--dim);font-size:11px">Buscando...</div>
+      </div>
+      <div style="border-top:1px solid var(--cb);padding-top:8px">
+        <div style="font-size:10px;color:var(--dim);margin-bottom:4px">NOMBRE DE ESTE DISPOSITIVO</div>
+        <input id="rm-myname" type="text" placeholder="Mi PC / Celular..." value="${_myDeviceName()}"
+          style="width:100%;background:rgba(0,0,0,.3);border:1px solid var(--cb);color:var(--c2);font-size:11px;padding:5px 8px;border-radius:4px;font-family:inherit;box-sizing:border-box">
+        <button class="btn s g" style="width:100%;margin-top:6px;font-size:10px" id="rm-save-name">GUARDAR</button>
+      </div>
+    </div>
+
+    <!-- Panel principal -->
+    <div style="flex:1;display:flex;flex-direction:column;gap:8px;min-width:0">
+      <div style="display:flex;align-items:center;gap:10px">
+        <div style="font-size:11px;color:var(--dim)">CONTROLANDO: <span id="rm-selected-name" style="color:var(--c)">— ninguno —</span></div>
+        <div style="flex:1"></div>
+        <button id="rm-screen-btn" class="btn s" style="font-size:10px" disabled>VER PANTALLA</button>
+        <div id="rm-screen-dot" style="width:7px;height:7px;border-radius:50%;background:#555"></div>
+      </div>
+
+      <!-- Vista de pantalla remota -->
+      <div id="rm-screen-wrap" style="background:rgba(0,0,0,.4);border:1px solid var(--cb);border-radius:6px;overflow:hidden;height:380px;display:flex;align-items:center;justify-content:center">
+        <img id="rm-screen-img" style="max-width:100%;max-height:100%;object-fit:contain;display:none" />
+        <div id="rm-screen-off" style="color:var(--dim);font-size:12px;text-align:center">
+          Selecciona un dispositivo y activa "Ver Pantalla"<br>
+          <span style="font-size:10px;opacity:.6">(El bridge del dispositivo remoto debe estar corriendo)</span>
+        </div>
+      </div>
+
+      <!-- Chat de comandos -->
+      <div id="rm-chat" style="flex:1;overflow-y:auto;min-height:80px;max-height:180px;display:flex;flex-direction:column;gap:4px;font-size:12px"></div>
+      <div style="display:flex;gap:8px">
+        <input id="rm-input" type="text" placeholder="Escribe un comando para el dispositivo seleccionado..."
+          style="flex:1;background:rgba(0,0,0,.3);border:1px solid var(--cb);color:var(--c2);font-size:12px;padding:8px 10px;border-radius:6px;font-family:inherit" disabled>
+        <button id="rm-send" class="btn" style="font-size:11px" disabled>ENVIAR</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+// ── Lógica del panel ──────────────────────────────────────────────────────
+function bindRemote() {
+  let selectedDevice = null;   // { deviceId, name }
+  let screenActive   = false;
+  let screenInterval = null;
+  let cmdListener    = null;   // Firestore real-time listener
+
+  // -- Guardar nombre de este dispositivo
+  $('#rm-save-name').onclick = () => {
+    const n = $('#rm-myname').value.trim();
+    if (!n) return;
+    localStorage.setItem('max_device_name', n);
+    registerThisDevice();
+    toast('Nombre guardado');
+  };
+
+  // -- Cargar lista de dispositivos (poll cada 10 s)
+  async function loadDevices() {
+    try {
+      const snap = await _db.collection('max_devices').get();
+      const now = Date.now();
+      const list = [];
+      snap.forEach(doc => {
+        const d = doc.data();
+        const last = new Date(d.lastSeen || 0).getTime();
+        const online = (now - last) < 60000; // online si visto hace < 60 s
+        if (d.deviceId !== _myDeviceId()) {
+          list.push({ ...d, online });
+        }
+      });
+      const el = $('#rm-devices');
+      if (!el) return;
+      if (list.length === 0) {
+        el.innerHTML = '<div style="color:var(--dim);font-size:11px">Sin dispositivos online.<br>Abre el bridge en otra PC.</div>';
+        return;
+      }
+      el.innerHTML = list.map(d => `
+        <div class="rm-dev ${d.online?'':'rm-off'}" data-id="${d.deviceId}" data-name="${d.name}"
+          style="padding:8px 10px;border-radius:6px;border:1px solid ${d.online?'var(--cb)':'rgba(255,255,255,.08)'};
+                 cursor:${d.online?'pointer':'default'};display:flex;align-items:center;gap:8px;
+                 background:${selectedDevice?.deviceId===d.deviceId?'var(--cd)':'rgba(0,0,0,.2)'};transition:.2s">
+          <div style="width:7px;height:7px;border-radius:50%;background:${d.online?'var(--c)':'#555'};flex-shrink:0"></div>
+          <div>
+            <div style="font-size:11px;color:${d.online?'var(--c2)':'var(--dim)'}">${d.name}</div>
+            <div style="font-size:9px;color:var(--dim)">${d.status==='online'?'Bridge activo':'Solo navegador'}</div>
+          </div>
+        </div>`).join('');
+      el.querySelectorAll('.rm-dev:not(.rm-off)').forEach(el => {
+        el.onclick = () => selectDevice({ deviceId: el.dataset.id, name: el.dataset.name });
+      });
+    } catch(e) { console.warn('loadDevices:', e); }
+  }
+  loadDevices();
+  const devTimer = setInterval(loadDevices, 10000);
+
+  // -- Seleccionar dispositivo
+  function selectDevice(dev) {
+    selectedDevice = dev;
+    $('#rm-selected-name').textContent = dev.name;
+    $('#rm-input').disabled = false;
+    $('#rm-send').disabled = false;
+    $('#rm-screen-btn').disabled = false;
+    addRmMsg(`Conectado a ${dev.name}`, 'sys');
+    loadDevices(); // actualizar highlight
+    // Escuchar resultados en tiempo real
+    if (cmdListener) cmdListener();
+    cmdListener = _db.collection('max_commands')
+      .where('targetDevice', '==', dev.deviceId)
+      .orderBy('createdAt', 'desc').limit(1)
+      .onSnapshot(snap => {
+        snap.docChanges().forEach(ch => {
+          const d = ch.doc.data();
+          if ((d.status === 'done' || d.status === 'error') && d.result) {
+            addRmMsg(d.result, 'max');
+          }
+        });
+      }, () => {});
+  }
+
+  // -- Chat
+  function addRmMsg(text, who) {
+    const c = $('#rm-chat');
+    if (!c) return;
+    const colors = { you:'var(--c)', max:'var(--c2)', sys:'var(--dim)' };
+    const labels = { you:'TÚ', max:'MAX', sys:'SYS' };
+    const div = document.createElement('div');
+    div.style.cssText = `padding:4px 8px;border-radius:4px;background:rgba(0,0,0,.25);border-left:2px solid ${colors[who]}`;
+    div.innerHTML = `<span style="font-size:9px;color:${colors[who]};letter-spacing:1px">${labels[who]}</span><br>${text}`;
+    c.appendChild(div);
+    c.scrollTop = c.scrollHeight;
+  }
+
+  // -- Enviar comando
+  async function sendRemoteCmd() {
+    if (!selectedDevice) return;
+    const msg = $('#rm-input').value.trim();
+    if (!msg) return;
+    $('#rm-input').value = '';
+    addRmMsg(msg, 'you');
+    try {
+      await _db.collection('max_commands').add({
+        targetDevice: selectedDevice.deviceId,
+        fromDevice: _myDeviceId(),
+        message: msg,
+        status: 'pending',
+        createdAt: new Date().toISOString()
+      });
+      addRmMsg('Enviado — esperando respuesta...', 'sys');
+    } catch(e) {
+      addRmMsg('Error al enviar: ' + e.message, 'sys');
+    }
+  }
+  $('#rm-send').onclick = sendRemoteCmd;
+  $('#rm-input').addEventListener('keydown', e => { if (e.key === 'Enter') sendRemoteCmd(); });
+
+  // -- Ver pantalla remota
+  $('#rm-screen-btn').onclick = async () => {
+    if (!selectedDevice) return;
+    screenActive = !screenActive;
+    $('#rm-screen-btn').textContent = screenActive ? 'DETENER PANTALLA' : 'VER PANTALLA';
+    $('#rm-screen-dot').style.background = screenActive ? 'var(--c)' : '#555';
+
+    if (screenActive) {
+      // Registrar como watcher en Firestore
+      await _db.collection('max_watchers').doc(selectedDevice.deviceId).set({
+        count: firebase.firestore.FieldValue.increment(1)
+      }, { merge: true });
+      $('#rm-screen-off').style.display = 'none';
+      // Polling de la imagen cada 3 s (base64 directo desde Firestore)
+      screenInterval = setInterval(async () => {
+        try {
+          const doc = await _db.collection('max_screens').doc(selectedDevice.deviceId).get();
+          if (doc.exists) {
+            const b64 = doc.data().b64;
+            if (b64) {
+              const img = $('#rm-screen-img');
+              img.src = 'data:image/jpeg;base64,' + b64;
+              img.style.display = 'block';
+            }
+          }
+        } catch(e) {}
+      }, 3000);
+    } else {
+      // Quitar watcher
+      try {
+        await _db.collection('max_watchers').doc(selectedDevice.deviceId).set({
+          count: firebase.firestore.FieldValue.increment(-1)
+        }, { merge: true });
+      } catch(e) {}
+      clearInterval(screenInterval);
+      $('#rm-screen-img').style.display = 'none';
+      $('#rm-screen-off').style.display = 'block';
+    }
+  };
+
+  // Cleanup al cerrar la ventana
+  return () => {
+    clearInterval(devTimer);
+    clearInterval(screenInterval);
+    if (cmdListener) cmdListener();
+    if (screenActive && selectedDevice) {
+      _db.collection('max_watchers').doc(selectedDevice.deviceId).set({
+        count: firebase.firestore.FieldValue.increment(-1)
+      }, { merge: true }).catch(() => {});
+    }
+  };
+}
+</script>
+</body>
+</html>
